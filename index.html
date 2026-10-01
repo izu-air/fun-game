@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#1b1530">
+  <title>Мяу-Ган</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="hud">
+      <div class="currency" title="Золото"><span>🪙</span><b id="gold">0</b></div>
+      <div class="stage-info">
+        <div id="stage-label">Этап 1</div>
+        <div class="progress"><div id="stage-progress"></div><span id="stage-progress-text"></span></div>
+      </div>
+      <div class="currency" title="Рыбьи косточки"><span>🦴</span><b id="bones">0</b></div>
+    </header>
+
+    <section class="field">
+      <canvas id="game" aria-label="Поле боя"></canvas>
+      <button id="boss-btn" class="boss-btn" hidden>⚔️ В бой с боссом!</button>
+    </section>
+
+    <section class="skills" id="skills"></section>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="upgrades" role="tab">Прокачка</button>
+      <button class="tab" data-tab="prestige" role="tab">Перерождение</button>
+      <button class="tab" data-tab="stats" role="tab">Статистика</button>
+    </nav>
+
+    <section class="panel" id="panel-upgrades">
+      <div class="buy-amount" id="buy-amount">
+        <span>Покупать:</span>
+        <button data-amount="1" class="active">×1</button>
+        <button data-amount="10">×10</button>
+        <button data-amount="max">МАКС</button>
+      </div>
+      <div id="upgrade-list" class="upgrade-list"></div>
+    </section>
+
+    <section class="panel" id="panel-prestige" hidden>
+      <div class="prestige-card">
+        <div class="prestige-icon">🦴</div>
+        <h2>Перерождение</h2>
+        <p>Начни путь заново, но сильнее. Каждая <b>рыбья косточка</b> навсегда даёт
+          <b>+10% урона</b> и <b>+10% золота</b>.</p>
+        <p class="muted">Сбрасываются этап, золото и улучшения. Доступно с 25-го этапа.</p>
+        <div class="prestige-gain">Получишь: <b id="prestige-gain">0</b> 🦴</div>
+        <div class="muted" id="prestige-bonus"></div>
+        <button id="prestige-btn" class="primary">Переродиться</button>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-stats" hidden>
+      <dl class="stats" id="stats-list"></dl>
+      <button id="reset-btn" class="danger">Сбросить прогресс</button>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <div class="modal" id="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-icon" id="modal-icon">😺</div>
+      <h2 id="modal-title"></h2>
+      <p id="modal-text"></p>
+      <div class="modal-actions" id="modal-actions"></div>
+    </div>
+  </div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
