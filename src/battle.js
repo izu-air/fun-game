@@ -2,12 +2,12 @@
 // Не сохраняется — живёт только в сессии.
 import {
   ENEMIES_PER_STAGE, BOSS_TIME_LIMIT, MAX_ALIVE_ENEMIES, ENEMY, ENEMY_TYPES, HERO, SKILLS,
-  MARCH_SPEED, SPAWN_GAP, CRATE_GUN_CHANCE,
+  MARCH_SPEED, SPAWN_GAP, CRATE_GUN_CHANCE, KEYS,
 } from './config.js';
 import {
   isBossStage, enemyHp, enemyDamage, enemyGold, pickEnemyType, formatNumber, buyTier,
 } from './formulas.js';
-import { statsOf, addGold, isSkillUnlocked, addGun } from './state.js';
+import { statsOf, addGold, isSkillUnlocked, addGun, addKeys } from './state.js';
 
 export const WORLD = { width: 480, height: 340, groundY: 278 };
 // Позиции котиков в строю: первый слот впереди, остальные чуть дальше от зрителя.
@@ -23,7 +23,7 @@ const BULLET_TURN_RATE = 9; // рад/с — пули доворачивают �
 export class Battle {
   constructor(state, events = {}) {
     this.state = state;
-    // { onStageStart, onStageFail, onBossKill, onGunDrop, sfx }
+    // { onStageStart, onStageFail, onBossKill, onGunDrop, onKey, sfx }
     this.events = events;
     this.time = 0;
     this.scroll = 0;
@@ -102,7 +102,6 @@ export class Battle {
   // ---------- Основной цикл ----------
   update(dt) {
     this.time += dt;
-    this.state.stats.playTime += dt;
     this.squad = statsOf(this.state);
     const squad = this.squad;
 
@@ -294,6 +293,8 @@ export class Battle {
     for (let i = 0; i < (enemy.isBoss || enemy.runner ? 12 : 3); i++) this.coin(enemy.x, enemy.y - enemy.size * 0.5);
     this.events.sfx?.(enemy.obstacle ? 'break' : 'coin');
     if (ENEMY_TYPES[enemy.type].dropsGun && Math.random() < CRATE_GUN_CHANCE) this.dropGun(enemy);
+    if (enemy.isBoss) this.giveKeys(enemy, this.state.stage % 10 === 0 ? KEYS.bigBoss : KEYS.boss);
+    if (enemy.runner && Math.random() < KEYS.goldMouseChance) this.giveKeys(enemy, 1);
     if (enemy.isBoss) {
       this.state.stats.bossKills++;
       this.shake = 12;
@@ -307,6 +308,12 @@ export class Battle {
     const placed = addGun(this.state, tier) >= 0;
     this.floatText(enemy.x, enemy.y - enemy.size * 3, placed ? '🔫 Пушка!' : 'Арсенал полон', placed ? '#7dd3fc' : '#fca5a5', 16);
     this.events.onGunDrop?.(tier, placed);
+  }
+
+  giveKeys(enemy, n) {
+    addKeys(this.state, n);
+    this.floatText(enemy.x, enemy.y - enemy.size * 3.4, `+${n} 🔑`, '#ffe066', 20);
+    this.events.onKey?.(n);
   }
 
   removeEnemy(enemy) {

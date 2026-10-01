@@ -1,13 +1,14 @@
 // Точка входа: игровой цикл, связка боя с интерфейсом, сохранения.
-import { UPGRADES, SKILLS, PRESTIGE_MIN_STAGE, CATS, MAX_GUN_TIER } from './config.js';
+import { UPGRADES, SKILLS, PRESTIGE_MIN_STAGE, CATS, MAX_GUN_TIER, CASES } from './config.js';
 import {
   formatNumber, formatDuration, isMaxed, isBossStage, biomeFor, bonesForPrestige,
-  boneMultiplier, expectedDps, squadDps, gunInfo, buyTier,
+  boneMultiplier, expectedDps, squadDps, gunInfo, buyTier, caseOdds, rollCaseBonus,
 } from './formulas.js';
 import {
   createState, statsOf, buyUpgrade, nextCost, isSkillUnlocked, canPrestige, prestige,
   applyOffline, saveToStorage, loadFromStorage, clearStorage, buyGun, nextGunCost, mergeGuns,
-  mergeAll, equipGun, equipBest, isSlotUnlocked,
+  mergeAll, equipGun, equipBest, isSlotUnlocked, casePrice, caseBlocker, openCase, pityLeft,
+  cycleSpeed, availableSpeeds,
 } from './state.js';
 import { Battle, WORLD } from './battle.js';
 import { render, drawGun, GUN_EXTENTS } from './render.js';
@@ -86,6 +87,10 @@ function newBattle() {
     },
     onBossKill() {
       sfx('win');
+    },
+    onKey(n) {
+      sfx('key');
+      toast(`🔑 +${n} ${n > 1 ? 'ключа' : 'ключ'} для золотого кейса!`);
     },
     onGunDrop(tier, placed) {
       toast(placed ? `📦 Из ящика выпал ${gunInfo(tier).name}!` : '📦 Арсенал полон — слей или продай пушки');
@@ -256,6 +261,186 @@ function updateSoundBtn() {
   $('sound-btn').textContent = state.sound ? '🔊' : '🔇';
 }
 
+// ---------- Кейсы ----------
+const caseEls = {};
+const BLOCKER_TEXT = { full: 'Арсенал полон', gold: 'Не хватает золота', keys: 'Нужен ключ 🔑' };
+
+function buildCases() {
+  const grid = $('case-grid');
+  for (const [key, c] of Object.entries(CASES)) {
+    const card = document.createElement('div');
+    card.className = `case-card ${key}`;
+    card.innerHTML = `<div class="case-icon">${c.icon}</div><div class="case-name">${c.name}</div>
+      <div class="odds"></div><div class="pity"></div><button class="open-btn"></button>`;
+    const btn = card.querySelector('.open-btn');
+    btn.onclick = () => startRoulette(key);
+    grid.append(card);
+    caseEls[key] = { odds: card.querySelector('.odds'), pity: card.querySelector('.pity'), btn, base: -1 };
+  }
+}
+
+function updateCases() {
+  $('cases-gold').textContent = formatNumber(state.gold);
+  $('cases-keys').textContent = state.keys;
+  const base = buyTier(state.levels.forge);
+  for (const [key, c] of Object.entries(CASES)) {
+    const el = caseEls[key];
+    // список шансов зависит только от уровня Кузни — перерисовываем, когда он меняется
+    if (el.base !== base) {
+      el.base = base;
+      el.odds.innerHTML = caseOdds(key).map(({ bonus, chance }) => {
+        const info = gunInfo(base + bonus);
+        return `<div><span style="color:${info.rarity.color}">${info.name}</span><span>${(chance * 100).toFixed(0)}%</span></div>`;
+      }).join('');
+    }
+    el.pity.textContent = c.pity
+      ? (pityLeft(state) <= 1 ? 'Следующий — гарантированно +3!' : `Гарантия +3 через ${pityLeft(state)}`)
+      : '';
+    const blocker = caseBlocker(state, key);
+    const price = c.currency === 'gold' ? `🪙 ${formatNumber(casePrice(state, key))}` : `🔑 ${casePrice(state, key)}`;
+    el.btn.disabled = !!blocker;
+    el.btn.textContent = blocker && blocker !== 'gold' ? BLOCKER_TEXT[blocker] : `Открыть · ${price}`;
+  }
+  document.querySelector('[data-tab="cases"]').classList.toggle('badge', state.keys > 0 && state.guns.includes(0));
+}
+
+// ---------- Рулетка ----------
+const REEL_ITEMS = 48;
+const WIN_INDEX = 42;
+const ITEM_STEP = 84 + 6; // ширина ячейки + зазор, как в style.css
+let spin = null;
+
+function startRoulette(key) {
+  const blocker = caseBlocker(state, key);
+  if (blocker) return toast(BLOCKER_TEXT[blocker]);
+  const result = openCase(state, key);
+  if (!result) return;
+  updateCases();
+  if (!$('panel-arsenal').hidden) renderArsenal();
+
+  const c = CASES[key];
+  $('roulette-title').textContent = `${c.icon} ${c.name}`;
+  $('roulette-card').classList.remove('jackpot');
+  $('roulette-result').textContent = '';
+  $('roulette-skip').hidden = false;
+  $('roulette-again').hidden = true;
+  $('roulette-take').hidden = true;
+  $('roulette').hidden = false;
+
+  const reel = $('reel');
+  reel.replaceChildren();
+  const base = buyTier(state.levels.forge);
+  for (let i = 0; i < REEL_ITEMS; i++) {
+    // соседние ячейки показывают честные шансы этого кейса
+    const tier = i === WIN_INDEX ? result.tier : Math.min(MAX_GUN_TIER, base + rollCaseBonus(key));
+    const info = gunInfo(tier);
+    const item = document.createElement('div');
+    item.className = 'reel-item';
+    item.style.borderColor = info.rarity.color;
+    item.innerHTML = `<img src="${gunIcon(tier)}" alt=""><span style="color:${info.rarity.color}">${info.name}</span>`;
+    reel.append(item);
+  }
+
+  const windowW = $('reel-window').clientWidth;
+  const jitter = (Math.random() - 0.5) * 84 * 0.7;
+  const target = WIN_INDEX * ITEM_STEP + 42 - windowW / 2 + jitter;
+  reel.style.transition = 'none';
+  reel.style.transform = 'translateX(0)';
+  void reel.offsetWidth; // применяем стартовую позицию до запуска анимации
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const duration = reduced ? 0.6 : 4.6;
+  reel.style.transition = `transform ${duration}s cubic-bezier(0.08, 0.7, 0.12, 1)`;
+  reel.style.transform = `translateX(${-target}px)`;
+
+  spin = { key, result, target, lastIndex: -1, raf: 0, done: false };
+  const tick = () => {
+    if (!spin || spin.done) return;
+    const x = new DOMMatrixReadOnly(getComputedStyle(reel).transform).m41;
+    const idx = Math.floor((-x + windowW / 2) / ITEM_STEP);
+    if (idx !== spin.lastIndex) {
+      spin.lastIndex = idx;
+      sfx('tick');
+    }
+    spin.raf = requestAnimationFrame(tick);
+  };
+  spin.raf = requestAnimationFrame(tick);
+  reel.addEventListener('transitionend', finishRoulette, { once: true });
+}
+
+function finishRoulette() {
+  if (!spin || spin.done) return;
+  spin.done = true;
+  cancelAnimationFrame(spin.raf);
+  const reel = $('reel');
+  reel.style.transition = 'none';
+  reel.style.transform = `translateX(${-spin.target}px)`;
+  reel.children[WIN_INDEX].classList.add('win');
+
+  const { tier, bonus, jackpot, forced } = spin.result;
+  const info = gunInfo(tier);
+  const note = jackpot ? '🎉 СУПЕРПРИЗ!' : forced ? '🛡️ Сработала гарантия!' : bonus > 0 ? `+${bonus} к уровню Кузни` : 'Обычная пушка';
+  $('roulette-result').innerHTML = `${note}<br>Выпало: <b style="color:${info.rarity.color}">${info.name}</b> · ур. ${tier}`;
+  if (jackpot) {
+    $('roulette-card').classList.add('jackpot');
+    confetti();
+    sfx('jackpot');
+  } else {
+    sfx('reveal');
+  }
+  if (tier === state.stats.bestGun && tier > 1) toast(`✨ Лучшая пушка в коллекции: ${info.name}!`);
+
+  $('roulette-skip').hidden = true;
+  $('roulette-take').hidden = false;
+  const again = $('roulette-again');
+  again.hidden = false;
+  again.disabled = !!caseBlocker(state, spin.key);
+  const c = CASES[spin.key];
+  again.textContent = c.currency === 'gold' ? `Ещё · 🪙 ${formatNumber(casePrice(state, spin.key))}` : `Ещё · 🔑 ${casePrice(state, spin.key)}`;
+}
+
+function closeRoulette() {
+  $('roulette').hidden = true;
+  spin = null;
+  updateCases();
+  if (!$('panel-arsenal').hidden) renderArsenal();
+}
+
+function confetti() {
+  const colors = ['#ffb800', '#ff4d6d', '#4cc9f0', '#5bd16a', '#b46cff'];
+  for (let i = 0; i < 60; i++) {
+    const p = document.createElement('i');
+    p.className = 'confetti';
+    p.style.left = `${Math.random() * 100}vw`;
+    p.style.background = colors[i % colors.length];
+    p.style.animationDuration = `${1.6 + Math.random() * 1.6}s`;
+    p.style.animationDelay = `${Math.random() * 0.4}s`;
+    document.body.append(p);
+    setTimeout(() => p.remove(), 3800);
+  }
+}
+
+function setupRoulette() {
+  $('roulette-skip').onclick = finishRoulette;
+  $('roulette-take').onclick = closeRoulette;
+  $('roulette-again').onclick = () => spin && startRoulette(spin.key);
+}
+
+// ---------- Скорость игры ----------
+function updateSpeedBtn() {
+  const btn = $('speed-btn');
+  btn.textContent = `×${state.speed}`;
+  btn.classList.toggle('fast', state.speed > 1);
+}
+
+function setupSpeed() {
+  $('speed-btn').onclick = () => {
+    const speed = cycleSpeed(state);
+    updateSpeedBtn();
+    if (speed === 1 && !availableSpeeds(state).includes(5)) toast('⏩ Скорость ×5 откроется после первого перерождения');
+    else toast(speed === 1 ? '▶️ Обычная скорость' : `⏩ Скорость игры ×${speed}`);
+  };
+}
+
 // ---------- Навыки ----------
 const skillEls = {};
 function buildSkills() {
@@ -366,6 +551,7 @@ function setupTabs() {
       for (const p of document.querySelectorAll('.panel')) p.hidden = p.id !== `panel-${tab.dataset.tab}`;
       updateUI(true);
       if (tab.dataset.tab === 'arsenal') renderArsenal();
+      if (tab.dataset.tab === 'cases') updateCases();
     };
   }
 }
@@ -377,7 +563,7 @@ function setupPrestige() {
     showModal({
       icon: '🦴',
       title: 'Переродиться?',
-      text: `Ты получишь <b>${gain}</b> 🦴. Урон и золото станут <b>×${boneMultiplier(state.bones + gain).toFixed(1)}</b>.<br>Этап, золото и улучшения сбросятся.`,
+      text: `Ты получишь <b>${gain}</b> 🦴. Урон и золото станут <b>×${boneMultiplier(state.bones + gain).toFixed(1)}</b>.<br>Этап, золото, улучшения и оружие сбросятся, ключи 🔑 останутся.`,
       actions: [
         {
           label: 'Да, переродиться!',
@@ -386,7 +572,9 @@ function setupPrestige() {
             newBattle();
             select(-1);
             saveToStorage(state);
-            toast(`🦴 +${got} косточек! Котик стал сильнее`);
+            toast(state.stats.prestiges === 1
+              ? `🦴 +${got} косточек! Открыта скорость ×5 ⏩`
+              : `🦴 +${got} косточек! Котик стал сильнее`);
             updateUI(true);
           },
         },
@@ -408,6 +596,7 @@ function setupPrestige() {
             state = createState();
             newBattle();
             select(-1);
+            updateSpeedBtn();
             updateUI(true);
           },
         },
@@ -424,7 +613,7 @@ function updatePrestige() {
   $('prestige-bonus').textContent = canPrestige(state)
     ? `Бонус станет ×${boneMultiplier(state.bones).toFixed(1)} → ×${boneMultiplier(state.bones + gain).toFixed(1)}`
     : `Дойди до ${PRESTIGE_MIN_STAGE}-го этапа (рекорд: ${state.maxStage})`;
-  document.querySelector('[data-tab="prestige"]').classList.toggle('badge', gain > 0 && gain >= Math.max(1, state.bones * 0.5));
+  document.querySelector('[data-tab="profile"]').classList.toggle('badge', gain > 0 && gain >= Math.max(1, state.bones * 0.5));
 }
 
 function updateStats(stats) {
@@ -432,6 +621,8 @@ function updateStats(stats) {
     ['Урон отряда в секунду', formatNumber(squadDps(stats))],
     ['Лучшая пушка', gunInfo(state.stats.bestGun).name],
     ['Слияний', formatNumber(state.stats.merges)],
+    ['Открыто кейсов', formatNumber(state.stats.casesOpened)],
+    ['Суперпризов', formatNumber(state.stats.jackpots)],
     ['Текущий этап', state.stage],
     ['Рекорд этапа', state.maxStage],
     ['Побеждено врагов', formatNumber(state.stats.kills)],
@@ -466,7 +657,9 @@ function updateUI(force = false) {
   if (!$('panel-upgrades').hidden) updateUpgrades(stats);
   if (!$('panel-arsenal').hidden) updateBuyGun();
   updatePrestige();
-  if (!$('panel-stats').hidden) updateStats(stats);
+  if (!$('panel-profile').hidden) updateStats(stats);
+  if (!$('panel-cases').hidden) updateCases();
+  else document.querySelector('[data-tab="cases"]').classList.toggle('badge', state.keys > 0 && state.guns.includes(0));
 }
 
 // ---------- Игровой цикл ----------
@@ -475,7 +668,9 @@ let saveTimer = 0;
 function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000); // защита от скачков после сворачивания вкладки
   last = now;
-  battle.update(dt);
+  // Ускорение: несколько шагов симуляции за кадр — поведение то же, что и на ×1.
+  for (let i = 0; i < state.speed; i++) battle.update(dt);
+  state.stats.playTime += dt; // реальное время, без учёта ускорения
   render(ctx, battle, battle.time);
   uiTimer -= dt;
   updateUI();
@@ -516,6 +711,10 @@ $('boss-btn').onclick = () => battle.challengeBoss();
 setSoundEnabled(state.sound);
 updateSoundBtn();
 setupArsenal();
+buildCases();
+setupRoulette();
+setupSpeed();
+updateSpeedBtn();
 buildSkills();
 buildUpgrades();
 setupTabs();

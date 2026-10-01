@@ -133,3 +133,32 @@ test('три котика наносят больше урона, чем оди�
   assert.ok(b.squad.cats.filter(Boolean).length === 3);
   assert.ok(team.gold > solo.gold);
 });
+
+test('босс даёт ключ, каждый 10-й — два', () => {
+  for (const [stage, expected] of [[5, 1], [10, 2]]) {
+    const state = createState();
+    state.stage = stage;
+    state.maxStage = stage;
+    const keys = state.keys;
+    const battle = new Battle(state);
+    const boss = battle.enemies.find((e) => e.isBoss) ?? (battle.spawnEnemy('boss'), battle.enemies.at(-1));
+    battle.hit(boss, boss.hp + 1, false, battle.squad);
+    assert.equal(state.keys - keys, expected, `этап ${stage}`);
+  }
+});
+
+test('ускорение ×3 проходит этап примерно втрое быстрее', () => {
+  const play = (speed) => {
+    const state = createState();
+    const battle = new Battle(state);
+    let frames = 0;
+    while (state.stage < 2 && frames < 10000) {
+      for (let i = 0; i < speed; i++) battle.update(1 / 60);
+      frames++;
+    }
+    return frames;
+  };
+  const normal = play(1);
+  const fast = play(3);
+  assert.ok(fast < normal / 2, `×1: ${normal} кадров, ×3: ${fast}`);
+});

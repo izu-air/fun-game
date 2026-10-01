@@ -103,6 +103,19 @@ export function sfx(name, variant) {
     case 'boss':
       tone({ type: 'sawtooth', from: 110, to: 70, dur: 0.6, vol: 0.2 });
       break;
+    case 'tick':
+      tone({ type: 'square', from: 1800, to: 1200, dur: 0.025, vol: 0.08 });
+      break;
+    case 'reveal':
+      [784, 1047].forEach((f, i) => tone({ type: 'triangle', from: f, dur: 0.18, vol: 0.2, delay: i * 0.09 }));
+      break;
+    case 'key':
+      tone({ type: 'triangle', from: 1568, to: 2093, dur: 0.15, vol: 0.18 });
+      break;
+    case 'jackpot':
+      [523, 659, 784, 1047, 1319, 1568].forEach((f, i) => tone({ type: 'square', from: f, dur: 0.2, vol: 0.13, delay: i * 0.08 }));
+      [1047, 1319, 1568].forEach((f) => tone({ type: 'triangle', from: f, dur: 0.8, vol: 0.12, delay: 0.5 }));
+      break;
     case 'win':
       [523, 659, 784, 1047].forEach((f, i) => tone({ type: 'square', from: f, dur: 0.14, vol: 0.12, delay: i * 0.1 }));
       break;

@@ -22,15 +22,16 @@
       <canvas id="game" aria-label="Поле боя"></canvas>
       <button id="boss-btn" class="boss-btn" hidden>⚔️ В бой с боссом!</button>
       <button id="sound-btn" class="sound-btn" aria-label="Звук">🔊</button>
+      <button id="speed-btn" class="speed-btn" aria-label="Скорость игры">×1</button>
     </section>
 
     <section class="skills" id="skills"></section>
 
     <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="arsenal" role="tab">Арсенал</button>
+      <button class="tab" data-tab="cases" role="tab">Кейсы</button>
       <button class="tab" data-tab="upgrades" role="tab">Прокачка</button>
-      <button class="tab" data-tab="prestige" role="tab">Косточки</button>
-      <button class="tab" data-tab="stats" role="tab">Статистика</button>
+      <button class="tab" data-tab="profile" role="tab">Профиль</button>
     </nav>
 
     <section class="panel" id="panel-arsenal">
@@ -45,6 +46,16 @@
         Нажми на пушку, потом на котика — он возьмёт её в лапы.</p>
     </section>
 
+    <section class="panel" id="panel-cases" hidden>
+      <div class="wallet">
+        <span>🪙 <b id="cases-gold">0</b></span>
+        <span>🔑 <b id="cases-keys">0</b></span>
+      </div>
+      <div class="case-grid" id="case-grid"></div>
+      <p class="hint">Пушка из кейса — уровня Кузни плюс бонус. Ключи 🔑 падают с боссов (×2 с каждого 10-го)
+        и иногда с золотой мыши.</p>
+    </section>
+
     <section class="panel" id="panel-upgrades" hidden>
       <div class="buy-amount" id="buy-amount">
         <span>Покупать:</span>
@@ -55,26 +66,40 @@
       <div id="upgrade-list" class="upgrade-list"></div>
     </section>
 
-    <section class="panel" id="panel-prestige" hidden>
+    <section class="panel" id="panel-profile" hidden>
       <div class="prestige-card">
         <div class="prestige-icon">🦴</div>
         <h2>Перерождение</h2>
         <p>Начни путь заново, но сильнее. Каждая <b>рыбья косточка</b> навсегда даёт
           <b>+10% урона</b> и <b>+10% золота</b>.</p>
-        <p class="muted">Сбрасываются этап, золото и улучшения. Доступно с 25-го этапа.</p>
+        <p class="muted">Сбрасываются этап, золото, улучшения и оружие. Ключи 🔑 сохраняются. Доступно с 25-го этапа.</p>
         <div class="prestige-gain">Получишь: <b id="prestige-gain">0</b> 🦴</div>
         <div class="muted" id="prestige-bonus"></div>
         <button id="prestige-btn" class="primary">Переродиться</button>
       </div>
-    </section>
-
-    <section class="panel" id="panel-stats" hidden>
+      <h3 class="section-title">Статистика</h3>
       <dl class="stats" id="stats-list"></dl>
       <button id="reset-btn" class="danger">Сбросить прогресс</button>
     </section>
   </main>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <div class="roulette" id="roulette" hidden>
+    <div class="roulette-card" id="roulette-card">
+      <h2 id="roulette-title"></h2>
+      <div class="reel-window" id="reel-window">
+        <div class="reel" id="reel"></div>
+        <div class="reel-marker"></div>
+      </div>
+      <div class="roulette-result" id="roulette-result"></div>
+      <div class="roulette-actions">
+        <button id="roulette-skip" class="secondary">Пропустить</button>
+        <button id="roulette-again" class="secondary" hidden>Ещё раз</button>
+        <button id="roulette-take" class="primary" hidden>Забрать</button>
+      </div>
+    </div>
+  </div>
 
   <div class="modal" id="modal" hidden>
     <div class="modal-card">

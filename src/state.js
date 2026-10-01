@@ -1,11 +1,12 @@
 // Сохраняемое состояние игрока: прокачка, этапы, перерождение, оффлайн-доход.
 import {
   UPGRADES, SKILLS, SAVE_KEY, SAVE_VERSION, OFFLINE_MAX_SECONDS, OFFLINE_EFFICIENCY,
-  OFFLINE_MIN_SECONDS, SPAWN_INTERVAL, INVENTORY_SIZE, CATS, MAX_GUN_TIER,
+  OFFLINE_MIN_SECONDS, SPAWN_INTERVAL, INVENTORY_SIZE, CATS, MAX_GUN_TIER, CASES, KEYS,
+  JACKPOT_BONUS, GAME_SPEEDS, SPEED_UNLOCK,
 } from './config.js';
 import {
   upgradeCost, isMaxed, bulkPurchase, squadStats, bonesForPrestige, idleGoldPerSecond,
-  gunCost, buyTier,
+  gunCost, buyTier, rollCaseBonus,
 } from './formulas.js';
 
 const starterSlots = () => [1, ...Array(CATS.length - 1).fill(0)];
@@ -23,8 +24,11 @@ export function createState() {
     guns: Array(INVENTORY_SIZE).fill(0), // инвентарь: уровень пушки или 0
     slots: starterSlots(), // пушки в руках котиков отряда
     gunsBought: 0,
+    keys: KEYS.start,
+    pity: 0, // обычных кейсов подряд без крупного выигрыша
+    speed: 1,
     sound: true,
-    stats: { kills: 0, bossKills: 0, prestiges: 0, totalGold: 0, playTime: 0, merges: 0, bestGun: 1 },
+    stats: { kills: 0, bossKills: 0, prestiges: 0, totalGold: 0, playTime: 0, merges: 0, bestGun: 1, casesOpened: 0, jackpots: 0 },
     lastSeen: Date.now(),
   };
 }
@@ -55,6 +59,64 @@ export function buyGun(state) {
   state.gold -= cost;
   state.gunsBought++;
   return addGun(state, buyTier(state.levels.forge ?? 0));
+}
+
+// ---------- Кейсы ----------
+export function casePrice(state, key) {
+  const c = CASES[key];
+  return c.currency === 'gold' ? nextGunCost(state) * c.priceMult : c.price;
+}
+
+const wallet = (state, key) => (CASES[key].currency === 'gold' ? state.gold : state.keys);
+
+// Почему кейс нельзя открыть прямо сейчас (или null, если можно).
+export function caseBlocker(state, key) {
+  if (!state.guns.includes(0)) return 'full';
+  if (wallet(state, key) < casePrice(state, key)) return CASES[key].currency === 'gold' ? 'gold' : 'keys';
+  return null;
+}
+
+// Сколько обычных кейсов осталось до гарантированного крупного выигрыша (1 — следующий).
+export function pityLeft(state) {
+  return CASES.common.pity.every - state.pity;
+}
+
+// Открывает кейс: списывает цену, кладёт пушку в инвентарь. Возвращает результат или null.
+export function openCase(state, key, rand = Math.random) {
+  if (caseBlocker(state, key)) return null;
+  const c = CASES[key];
+  const price = casePrice(state, key);
+  if (c.currency === 'gold') {
+    state.gold -= price;
+    state.gunsBought += c.gunsBoughtStep;
+  } else {
+    state.keys -= price;
+  }
+  const forced = c.pity && pityLeft(state) <= 1;
+  const bonus = rollCaseBonus(key, rand, forced ? c.pity.minBonus : 0);
+  if (c.pity) state.pity = bonus >= c.pity.minBonus ? 0 : state.pity + 1;
+  const tier = Math.min(MAX_GUN_TIER, buyTier(state.levels.forge ?? 0) + bonus);
+  const index = addGun(state, tier);
+  const jackpot = bonus >= JACKPOT_BONUS;
+  state.stats.casesOpened++;
+  if (jackpot) state.stats.jackpots++;
+  return { tier, bonus, jackpot, forced, index };
+}
+
+export function addKeys(state, n) {
+  state.keys += n;
+}
+
+// ---------- Скорость игры ----------
+export function availableSpeeds(state) {
+  return GAME_SPEEDS.filter((s) => SPEED_UNLOCK[s] !== 'prestige' || state.stats.prestiges > 0);
+}
+
+export function cycleSpeed(state) {
+  const speeds = availableSpeeds(state);
+  const i = speeds.indexOf(state.speed);
+  state.speed = speeds[(i + 1) % speeds.length];
+  return state.speed;
 }
 
 // Сливает пушку из ячейки from в ячейку to (обе в инвентаре, одинакового уровня).
@@ -145,6 +207,9 @@ export function prestige(state) {
     bones: state.bones + gained,
     autoSkills: state.autoSkills,
     sound: state.sound,
+    speed: state.speed,
+    keys: state.keys, // ключи и счётчик гарантии перерождение не сжигает
+    pity: state.pity,
     stats: { ...state.stats, prestiges: state.stats.prestiges + 1 },
   });
   return gained;
@@ -185,6 +250,9 @@ export function deserialize(json) {
     autoSkills: data.autoSkills === true,
     sound: data.sound !== false,
     gunsBought: Math.floor(num(data.gunsBought, 0)),
+    keys: Math.floor(num(data.keys, KEYS.start)),
+    pity: Math.min(CASES.common.pity.every - 1, Math.floor(num(data.pity, 0))),
+    speed: GAME_SPEEDS.includes(data.speed) ? data.speed : 1,
     lastSeen: num(data.lastSeen, Date.now()),
   };
   const tier = (v) => Math.min(MAX_GUN_TIER, Math.floor(num(v, 0)));
@@ -204,6 +272,7 @@ export function deserialize(json) {
   for (const key of Object.keys(fresh.stats)) {
     state.stats[key] = num(data.stats?.[key], fresh.stats[key]);
   }
+  if (!availableSpeeds(state).includes(state.speed)) state.speed = 1;
   return state;
 }
 

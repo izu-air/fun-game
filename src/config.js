@@ -92,6 +92,28 @@ export const GUN_COST = { base: 15, growth: 1.09 }; // цена n-й купле�
 export const INVENTORY_SIZE = 12;
 export const CRATE_GUN_CHANCE = 0.6;
 
+// ---------- Кейсы ----------
+// odds: [бонус к уровню пушки относительно Кузни, вес]. Бонус ≥ jackpotBonus — суперприз.
+export const CASES = {
+  common: {
+    name: 'Обычный кейс', icon: '📦', currency: 'gold',
+    priceMult: 3, // цена = 3 × цена обычной пушки
+    gunsBoughtStep: 2, // открытие дорожает так же, как покупка двух пушек
+    odds: [[0, 60], [1, 25], [2, 10], [3, 4], [5, 1]],
+    pity: { every: 10, minBonus: 3 }, // каждый 10-й кейс без крупного выигрыша — гарантированно +3 и выше
+  },
+  golden: {
+    name: 'Золотой кейс', icon: '🎁', currency: 'keys', price: 1,
+    odds: [[1, 50], [2, 30], [3, 14], [4, 5], [6, 1]],
+  },
+};
+export const JACKPOT_BONUS = 5;
+export const KEYS = { boss: 1, bigBoss: 2, goldMouseChance: 0.25, start: 1 }; // bigBoss — каждый 10-й этап
+
+// ---------- Скорость игры ----------
+export const GAME_SPEEDS = [1, 2, 3, 5];
+export const SPEED_UNLOCK = { 5: 'prestige' }; // ×5 — награда за первое перерождение
+
 // ---------- Отряд ----------
 export const CATS = [
   { key: 'ryzhik', name: 'Рыжик', fur: '#f4a442', furDark: '#d9822b', belly: '#fff1dc', band: '#e63946',

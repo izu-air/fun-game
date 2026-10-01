@@ -3,9 +3,12 @@ import assert from 'node:assert/strict';
 import {
   createState, buyUpgrade, nextCost, prestige, canPrestige, applyOffline, serialize, deserialize,
   saveToStorage, loadFromStorage, buyGun, addGun, mergeGuns, mergeAll, equipGun, equipBest,
-  nextGunCost,
+  nextGunCost, openCase, casePrice, caseBlocker, pityLeft, cycleSpeed, availableSpeeds, addKeys,
 } from '../src/state.js';
-import { UPGRADES, OFFLINE_MAX_SECONDS, INVENTORY_SIZE, CATS } from '../src/config.js';
+import { rollCaseBonus, caseOdds } from '../src/formulas.js';
+import {
+  UPGRADES, OFFLINE_MAX_SECONDS, INVENTORY_SIZE, CATS, CASES, JACKPOT_BONUS, KEYS, MAX_GUN_TIER,
+} from '../src/config.js';
 
 function memoryStorage() {
   const map = new Map();
@@ -222,4 +225,129 @@ test('оружие сохраняется и восстанавливается'
   assert.equal(bad.guns[0], 30);
   assert.equal(bad.guns[1], 0);
   assert.deepEqual(bad.slots, [3, 0, 0]);
+});
+
+// ---------- Кейсы и скорость ----------
+
+test('шансы кейсов складываются в 100%', () => {
+  for (const key of Object.keys(CASES)) {
+    const sum = caseOdds(key).reduce((s, o) => s + o.chance, 0);
+    assert.ok(Math.abs(sum - 1) < 1e-9, key);
+  }
+});
+
+test('бросок кейса: крайние значения и гарантия', () => {
+  assert.equal(rollCaseBonus('common', () => 0), 0);
+  assert.equal(rollCaseBonus('common', () => 0.9999), JACKPOT_BONUS);
+  assert.ok(rollCaseBonus('common', () => 0, 3) >= 3, 'гарантия отсекает мелкие исходы');
+  assert.ok(rollCaseBonus('golden', () => 0) >= 1, 'золотой кейс всегда лучше Кузни');
+});
+
+test('распределение обычного кейса совпадает с заявленным', () => {
+  let seed = 7;
+  const rand = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+  const counts = {};
+  const n = 20000;
+  for (let i = 0; i < n; i++) {
+    const b = rollCaseBonus('common', rand);
+    counts[b] = (counts[b] ?? 0) + 1;
+  }
+  for (const { bonus, chance } of caseOdds('common')) {
+    assert.ok(Math.abs((counts[bonus] ?? 0) / n - chance) < 0.015, `бонус ${bonus}`);
+  }
+});
+
+test('обычный кейс: платим золотом, получаем пушку, цена растёт', () => {
+  const s = createState();
+  s.gold = 1e6;
+  const price = casePrice(s, 'common');
+  const r = openCase(s, 'common', () => 0);
+  assert.equal(s.gold, 1e6 - price);
+  assert.equal(r.tier, 1);
+  assert.equal(s.guns[r.index], 1);
+  assert.ok(casePrice(s, 'common') > price);
+  assert.equal(s.stats.casesOpened, 1);
+});
+
+test('кузня поднимает уровень пушек из кейса, но не выше максимума', () => {
+  const s = createState();
+  s.gold = 1e9;
+  s.levels.forge = 3;
+  assert.equal(openCase(s, 'common', () => 0.9999).tier, 4 + JACKPOT_BONUS);
+  s.levels.forge = MAX_GUN_TIER;
+  assert.equal(openCase(s, 'common', () => 0.9999).tier, MAX_GUN_TIER);
+});
+
+test('гарантия: 10-й обычный кейс подряд даёт +3 и выше', () => {
+  const s = createState();
+  s.gold = 1e12;
+  for (let i = 0; i < CASES.common.pity.every - 1; i++) {
+    assert.equal(openCase(s, 'common', () => 0).bonus, 0);
+    s.guns.fill(0);
+  }
+  assert.equal(pityLeft(s), 1);
+  const r = openCase(s, 'common', () => 0);
+  assert.ok(r.forced);
+  assert.ok(r.bonus >= CASES.common.pity.minBonus);
+  assert.equal(pityLeft(s), CASES.common.pity.every, 'счётчик сбросился');
+});
+
+test('крупный выигрыш сбрасывает счётчик гарантии', () => {
+  const s = createState();
+  s.gold = 1e9;
+  openCase(s, 'common', () => 0);
+  openCase(s, 'common', () => 0.9999);
+  assert.equal(s.pity, 0);
+});
+
+test('суперприз засчитывается в статистику', () => {
+  const s = createState();
+  s.gold = 1e9;
+  assert.equal(openCase(s, 'common', () => 0.9999).jackpot, true);
+  assert.equal(s.stats.jackpots, 1);
+});
+
+test('золотой кейс открывается ключом', () => {
+  const s = createState();
+  assert.equal(s.keys, KEYS.start);
+  const r = openCase(s, 'golden', () => 0);
+  assert.equal(r.tier, 2);
+  assert.equal(s.keys, KEYS.start - 1);
+  assert.equal(caseBlocker(s, 'golden'), 'keys');
+  assert.equal(openCase(s, 'golden'), null);
+  addKeys(s, 2);
+  assert.equal(caseBlocker(s, 'golden'), null);
+});
+
+test('кейс не открывается в полный арсенал и ничего не списывает', () => {
+  const s = createState();
+  s.gold = 1e9;
+  s.guns.fill(1);
+  assert.equal(caseBlocker(s, 'common'), 'full');
+  assert.equal(openCase(s, 'common'), null);
+  assert.equal(s.gold, 1e9);
+});
+
+test('ключи и гарантия переживают перерождение', () => {
+  const s = createState();
+  s.maxStage = 40;
+  s.keys = 5;
+  s.pity = 4;
+  prestige(s);
+  assert.equal(s.keys, 5);
+  assert.equal(s.pity, 4);
+});
+
+test('скорость: ×5 открывается после перерождения', () => {
+  const s = createState();
+  assert.deepEqual(availableSpeeds(s), [1, 2, 3]);
+  assert.equal(cycleSpeed(s), 2);
+  assert.equal(cycleSpeed(s), 3);
+  assert.equal(cycleSpeed(s), 1);
+  s.stats.prestiges = 1;
+  s.speed = 3;
+  assert.equal(cycleSpeed(s), 5);
+  assert.equal(deserialize(serialize(s)).speed, 5);
+  s.stats.prestiges = 0;
+  assert.equal(deserialize(serialize(s)).speed, 1, 'недоступная скорость сбрасывается');
 });

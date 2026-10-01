@@ -2,7 +2,7 @@
 import {
   ENEMY, ENEMY_TYPES, HERO, UPGRADES, BOSS_EVERY, BONE_BONUS,
   PRESTIGE_MIN_STAGE, BIOMES, STAGES_PER_BIOME, GUN_FAMILIES, RARITIES, MAX_GUN_TIER,
-  GUN_TIER_POWER, GUN_COST, CATS,
+  GUN_TIER_POWER, GUN_COST, CATS, CASES,
 } from './config.js';
 
 export const isBossStage = (stage) => stage % BOSS_EVERY === 0;
@@ -111,6 +111,26 @@ export const gunCost = (bought) => Math.ceil(GUN_COST.base * GUN_COST.growth ** 
 
 // Уровень покупаемой пушки зависит от прокачки Кузни.
 export const buyTier = (forgeLevel) => Math.min(MAX_GUN_TIER, 1 + forgeLevel);
+
+// ---------- Кейсы ----------
+// Бросок бонуса к уровню пушки. minBonus > 0 — гарантия: выбираем только из исходов не ниже него.
+export function rollCaseBonus(caseKey, rand = Math.random, minBonus = 0) {
+  const pool = CASES[caseKey].odds.filter(([bonus]) => bonus >= minBonus);
+  const total = pool.reduce((sum, [, w]) => sum + w, 0);
+  let r = rand() * total;
+  for (const [bonus, w] of pool) {
+    r -= w;
+    if (r < 0) return bonus;
+  }
+  return pool[pool.length - 1][0];
+}
+
+// Шансы для показа игроку: [{ bonus, chance }]
+export function caseOdds(caseKey) {
+  const odds = CASES[caseKey].odds;
+  const total = odds.reduce((sum, [, w]) => sum + w, 0);
+  return odds.map(([bonus, w]) => ({ bonus, chance: w / total }));
+}
 
 // ---------- Отряд ----------
 // slots — массив уровней пушек в слотах (0 — пусто). Котик в слоте появляется, только если есть пушка.
