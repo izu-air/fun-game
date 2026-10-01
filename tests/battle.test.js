@@ -7,16 +7,16 @@ const run = (battle, seconds, dt = 1 / 30) => {
   for (let t = 0; t < seconds; t += dt) battle.update(dt);
 };
 
-test('котик проходит первый этап и получает золото', () => {
+test('отряд проходит первый этап и получает золото', () => {
   const state = createState();
   const battle = new Battle(state);
   run(battle, 40);
   assert.ok(state.stage >= 2, `застрял на этапе ${state.stage}`);
   assert.ok(state.gold > 0);
-  assert.ok(state.stats.kills >= 10);
+  assert.ok(battle.scroll > 0, 'отряд двигался вперёд');
 });
 
-test('слабый котик проваливает босса и откатывается назад', () => {
+test('слабый отряд проваливает босса и откатывается назад', () => {
   const state = createState();
   state.stage = 5;
   state.maxStage = 5;
@@ -40,7 +40,7 @@ test('вызов босса снова включает продвижение',
   assert.equal(battle.isBoss, true);
 });
 
-test('сильный котик побеждает босса', () => {
+test('сильный отряд побеждает босса', () => {
   const state = createState();
   state.stage = 5;
   state.maxStage = 5;
@@ -72,4 +72,64 @@ test('авто-навыки срабатывают сами', () => {
   const battle = new Battle(state);
   run(battle, 3);
   assert.ok(battle.cooldowns.volley > 0);
+});
+
+test('препятствие останавливает отряд, пока его не разрушат', () => {
+  const state = createState();
+  state.slots = [0, 0, 0]; // без оружия — никто не стреляет
+  const battle = new Battle(state);
+  battle.nextSpawnIn = Infinity;
+  battle.spawnEnemy('tree');
+  run(battle, 15);
+  assert.equal(battle.walking, false);
+  assert.equal(battle.enemies.length, 1);
+  const tree = battle.enemies[0];
+  battle.hit(tree, tree.hp + 1, false, battle.squad);
+  battle.update(1 / 30);
+  assert.equal(battle.walking, true);
+});
+
+test('ящик может выронить пушку в арсенал', () => {
+  const state = createState();
+  const drops = [];
+  const battle = new Battle(state, { onGunDrop: (tier, placed) => drops.push({ tier, placed }) });
+  const random = Math.random;
+  Math.random = () => 0; // гарантированный дроп
+  try {
+    battle.spawnEnemy('crate');
+    const crate = battle.enemies.at(-1);
+    battle.hit(crate, crate.hp + 1, false, battle.squad);
+  } finally {
+    Math.random = random;
+  }
+  assert.deepEqual(drops, [{ tier: 1, placed: true }]);
+  assert.equal(state.guns.filter(Boolean).length, 1);
+});
+
+test('золотая мышь убегает, если её не подстрелить', () => {
+  const state = createState();
+  state.slots = [0, 0, 0];
+  const battle = new Battle(state);
+  battle.nextSpawnIn = Infinity;
+  battle.spawnEnemy('goldMouse');
+  run(battle, 12);
+  assert.equal(battle.enemies.length, 0);
+  assert.equal(battle.killed, 1, 'побег засчитывается в прогресс этапа');
+  assert.equal(state.gold, 0);
+});
+
+test('три котика наносят больше урона, чем один', () => {
+  const solo = createState();
+  const team = createState();
+  for (const s of [solo, team]) {
+    s.stage = 9;
+    s.maxStage = 20;
+  }
+  team.slots = [1, 1, 1];
+  const a = new Battle(solo);
+  const b = new Battle(team);
+  run(a, 30);
+  run(b, 30);
+  assert.ok(b.squad.cats.filter(Boolean).length === 3);
+  assert.ok(team.gold > solo.gold);
 });

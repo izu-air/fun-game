@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import {
   enemyHp, enemyGold, upgradeCost, bulkPurchase, heroStats, expectedDps, bonesForPrestige,
   formatNumber, formatDuration, isBossStage, pickEnemyType, biomeFor, isMaxed,
+  gunInfo, gunCost, buyTier, squadStats, squadDps,
 } from '../src/formulas.js';
-import { UPGRADES, BIOMES } from '../src/config.js';
+import { UPGRADES, BIOMES, MAX_GUN_TIER, CATS } from '../src/config.js';
 
 test('HP и золото врагов растут с этапом', () => {
   assert.ok(enemyHp(2) > enemyHp(1));
@@ -96,5 +97,51 @@ test('биомы сменяются каждые 10 этапов', () => {
   assert.equal(biomeFor(1), BIOMES[0]);
   assert.equal(biomeFor(10), BIOMES[0]);
   assert.equal(biomeFor(11), BIOMES[1]);
-  assert.equal(biomeFor(41), BIOMES[0]);
+  assert.equal(biomeFor(BIOMES.length * 10 + 1), BIOMES[0]);
+});
+
+test('уровни оружия: семейства и редкость', () => {
+  assert.equal(gunInfo(1).family.key, 'pistol');
+  assert.equal(gunInfo(1).rarity.name, 'обычный');
+  assert.equal(gunInfo(5).rarity.name, 'легендарный');
+  assert.equal(gunInfo(6).family.key, 'smg');
+  assert.equal(gunInfo(MAX_GUN_TIER).family.key, 'minigun');
+  assert.ok(gunInfo(10).power > gunInfo(9).power);
+});
+
+test('каждое слияние строго усиливает пушку', () => {
+  const dps = (tier) => squadDps(squadStats({}, 0, [tier, 0, 0]));
+  for (let t = 1; t < MAX_GUN_TIER; t++) {
+    assert.ok(dps(t + 1) > dps(t) * 1.3, `уровень ${t} → ${t + 1}`);
+  }
+});
+
+test('цена пушек и кузня', () => {
+  assert.ok(gunCost(10) > gunCost(0));
+  assert.equal(buyTier(0), 1);
+  assert.equal(buyTier(3), 4);
+  assert.equal(buyTier(1000), MAX_GUN_TIER);
+});
+
+test('отряд: котик появляется только с пушкой и после открытия', () => {
+  const squad = squadStats({}, 0, [1, 0, 3], CATS[2].unlockStage - 1);
+  assert.ok(squad.cats[0]);
+  assert.equal(squad.cats[1], null);
+  assert.equal(squad.cats[2], null, 'Уголёк ещё не открыт');
+  const later = squadStats({}, 0, [1, 0, 3], CATS[2].unlockStage);
+  assert.ok(later.cats[2]);
+});
+
+test('бонусы котиков работают на весь отряд', () => {
+  const solo = squadStats({}, 0, [1, 0, 0], 100);
+  const duo = squadStats({}, 0, [1, 1, 0], 100);
+  assert.ok(Math.abs(solo.cats[0].damage / squadStats({}, 0, [0, 1, 0], 100).cats[1].damage - 1.1) < 1e-9, 'лидерский бонус Рыжика');
+  assert.ok(duo.cats[0].critChance > solo.cats[0].critChance, 'бонус Снежка');
+});
+
+test('дробовик стреляет дробью, снайперка пробивает', () => {
+  const shotgun = squadStats({}, 0, [11, 0, 0]).cats[0];
+  assert.equal(shotgun.pellets, 3);
+  const sniper = squadStats({}, 0, [21, 0, 0]).cats[0];
+  assert.equal(sniper.pierce, 1);
 });

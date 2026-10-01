@@ -1,11 +1,14 @@
 // Сохраняемое состояние игрока: прокачка, этапы, перерождение, оффлайн-доход.
 import {
   UPGRADES, SKILLS, SAVE_KEY, SAVE_VERSION, OFFLINE_MAX_SECONDS, OFFLINE_EFFICIENCY,
-  OFFLINE_MIN_SECONDS, SPAWN_INTERVAL,
+  OFFLINE_MIN_SECONDS, SPAWN_INTERVAL, INVENTORY_SIZE, CATS, MAX_GUN_TIER,
 } from './config.js';
 import {
-  upgradeCost, isMaxed, bulkPurchase, heroStats, bonesForPrestige, idleGoldPerSecond,
+  upgradeCost, isMaxed, bulkPurchase, squadStats, bonesForPrestige, idleGoldPerSecond,
+  gunCost, buyTier,
 } from './formulas.js';
+
+const starterSlots = () => [1, ...Array(CATS.length - 1).fill(0)];
 
 export function createState() {
   return {
@@ -17,12 +20,83 @@ export function createState() {
     autoAdvance: true,
     autoSkills: false,
     levels: Object.fromEntries(Object.keys(UPGRADES).map((k) => [k, 0])),
-    stats: { kills: 0, bossKills: 0, prestiges: 0, totalGold: 0, playTime: 0 },
+    guns: Array(INVENTORY_SIZE).fill(0), // инвентарь: уровень пушки или 0
+    slots: starterSlots(), // пушки в руках котиков отряда
+    gunsBought: 0,
+    sound: true,
+    stats: { kills: 0, bossKills: 0, prestiges: 0, totalGold: 0, playTime: 0, merges: 0, bestGun: 1 },
     lastSeen: Date.now(),
   };
 }
 
-export const statsOf = (state) => heroStats(state.levels, state.bones);
+export const statsOf = (state) => squadStats(state.levels, state.bones, state.slots, state.maxStage);
+
+// ---------- Оружие ----------
+export const isSlotUnlocked = (state, i) => state.maxStage >= CATS[i].unlockStage;
+
+function noteGun(state, tier) {
+  state.stats.bestGun = Math.max(state.stats.bestGun, tier);
+}
+
+// Кладёт пушку в первую свободную ячейку. Возвращает индекс или -1, если места нет.
+export function addGun(state, tier) {
+  const i = state.guns.indexOf(0);
+  if (i === -1) return -1;
+  state.guns[i] = tier;
+  noteGun(state, tier);
+  return i;
+}
+
+export const nextGunCost = (state) => gunCost(state.gunsBought);
+
+export function buyGun(state) {
+  const cost = nextGunCost(state);
+  if (state.gold < cost || !state.guns.includes(0)) return -1;
+  state.gold -= cost;
+  state.gunsBought++;
+  return addGun(state, buyTier(state.levels.forge ?? 0));
+}
+
+// Сливает пушку из ячейки from в ячейку to (обе в инвентаре, одинакового уровня).
+export function mergeGuns(state, from, to) {
+  const g = state.guns;
+  if (from === to || !g[from] || g[from] !== g[to] || g[to] >= MAX_GUN_TIER) return false;
+  g[to] += 1;
+  g[from] = 0;
+  state.stats.merges++;
+  noteGun(state, g[to]);
+  return true;
+}
+
+// Сливает все возможные пары, начиная с младших. Возвращает число слияний.
+export function mergeAll(state) {
+  let merges = 0;
+  for (let tier = 1; tier < MAX_GUN_TIER; tier++) {
+    const idx = state.guns.map((t, i) => (t === tier ? i : -1)).filter((i) => i >= 0);
+    for (let k = 0; k + 1 < idx.length; k += 2) {
+      if (mergeGuns(state, idx[k], idx[k + 1])) merges++;
+    }
+  }
+  return merges;
+}
+
+// Меняет местами пушку из инвентаря и пушку в слоте котика.
+export function equipGun(state, invIndex, slot) {
+  if (!isSlotUnlocked(state, slot) || !state.guns[invIndex]) return false;
+  [state.guns[invIndex], state.slots[slot]] = [state.slots[slot], state.guns[invIndex]];
+  return true;
+}
+
+// Раздаёт лучшие пушки открытым котикам, остальное — в инвентарь.
+export function equipBest(state) {
+  const all = [...state.guns, ...state.slots].filter((t) => t > 0).sort((a, b) => b - a);
+  const open = state.slots.map((_, i) => isSlotUnlocked(state, i));
+  const before = state.slots.join();
+  state.slots = state.slots.map((_, i) => (open[i] ? all.shift() ?? 0 : 0));
+  state.guns = Array(INVENTORY_SIZE).fill(0);
+  all.forEach((t, i) => { state.guns[i] = t; });
+  return state.slots.join() !== before;
+}
 
 export function addGold(state, amount) {
   state.gold += amount;
@@ -70,6 +144,7 @@ export function prestige(state) {
     ...fresh,
     bones: state.bones + gained,
     autoSkills: state.autoSkills,
+    sound: state.sound,
     stats: { ...state.stats, prestiges: state.stats.prestiges + 1 },
   });
   return gained;
@@ -108,15 +183,26 @@ export function deserialize(json) {
     stage: Math.max(1, Math.floor(num(data.stage, 1))),
     autoAdvance: data.autoAdvance !== false,
     autoSkills: data.autoSkills === true,
+    sound: data.sound !== false,
+    gunsBought: Math.floor(num(data.gunsBought, 0)),
     lastSeen: num(data.lastSeen, Date.now()),
   };
+  const tier = (v) => Math.min(MAX_GUN_TIER, Math.floor(num(v, 0)));
+  if (Array.isArray(data.guns)) {
+    for (let i = 0; i < INVENTORY_SIZE; i++) state.guns[i] = tier(data.guns[i]);
+  }
+  if (Array.isArray(data.slots)) {
+    state.slots = state.slots.map((_, i) => tier(data.slots[i]));
+  }
+  // Сохранение из первой версии без оружия — выдаём стартовый пистолет.
+  if (!state.slots.some((t) => t > 0) && !state.guns.some((t) => t > 0)) state.slots = starterSlots();
   state.maxStage = Math.max(state.stage, Math.floor(num(data.maxStage, 1)));
   for (const key of Object.keys(UPGRADES)) {
     const lvl = Math.floor(num(data.levels?.[key], 0));
     state.levels[key] = Math.min(lvl, UPGRADES[key].maxLevel ?? lvl);
   }
   for (const key of Object.keys(fresh.stats)) {
-    state.stats[key] = num(data.stats?.[key], 0);
+    state.stats[key] = num(data.stats?.[key], fresh.stats[key]);
   }
   return state;
 }

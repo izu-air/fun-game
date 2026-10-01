@@ -21,17 +21,31 @@
     <section class="field">
       <canvas id="game" aria-label="Поле боя"></canvas>
       <button id="boss-btn" class="boss-btn" hidden>⚔️ В бой с боссом!</button>
+      <button id="sound-btn" class="sound-btn" aria-label="Звук">🔊</button>
     </section>
 
     <section class="skills" id="skills"></section>
 
     <nav class="tabs" role="tablist">
-      <button class="tab active" data-tab="upgrades" role="tab">Прокачка</button>
-      <button class="tab" data-tab="prestige" role="tab">Перерождение</button>
+      <button class="tab active" data-tab="arsenal" role="tab">Арсенал</button>
+      <button class="tab" data-tab="upgrades" role="tab">Прокачка</button>
+      <button class="tab" data-tab="prestige" role="tab">Косточки</button>
       <button class="tab" data-tab="stats" role="tab">Статистика</button>
     </nav>
 
-    <section class="panel" id="panel-upgrades">
+    <section class="panel" id="panel-arsenal">
+      <div class="squad" id="squad"></div>
+      <div class="arsenal-actions">
+        <button id="buy-gun" class="buy-gun"></button>
+        <button id="merge-all" class="tool-btn">⚡ Слить всё</button>
+        <button id="equip-best" class="tool-btn">⭐ Лучшее</button>
+      </div>
+      <div class="inventory" id="inventory"></div>
+      <p class="hint" id="arsenal-hint">Нажми на пушку, потом на такую же — они сольются в пушку уровнем выше.
+        Нажми на пушку, потом на котика — он возьмёт её в лапы.</p>
+    </section>
+
+    <section class="panel" id="panel-upgrades" hidden>
       <div class="buy-amount" id="buy-amount">
         <span>Покупать:</span>
         <button data-amount="1" class="active">×1</button>

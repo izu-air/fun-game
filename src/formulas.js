@@ -1,7 +1,8 @@
 // Чистые функции баланса: без DOM и без состояния — их проверяют тесты и симуляция.
 import {
   ENEMY, ENEMY_TYPES, HERO, UPGRADES, BOSS_EVERY, BONE_BONUS,
-  PRESTIGE_MIN_STAGE, BIOMES, STAGES_PER_BIOME,
+  PRESTIGE_MIN_STAGE, BIOMES, STAGES_PER_BIOME, GUN_FAMILIES, RARITIES, MAX_GUN_TIER,
+  GUN_TIER_POWER, GUN_COST, CATS,
 } from './config.js';
 
 export const isBossStage = (stage) => stage % BOSS_EVERY === 0;
@@ -71,7 +72,7 @@ const milestone = (level) => 2 ** Math.floor(level / HERO.milestoneEvery);
 
 export const boneMultiplier = (bones) => 1 + bones * BONE_BONUS;
 
-// Итоговые характеристики котика из уровней улучшений и косточек.
+// Базовые характеристики из улучшений и косточек (для пистолета 1-го уровня).
 export function heroStats(levels, bones = 0) {
   const l = (k) => levels[k] ?? 0;
   const maxHp = HERO.baseHp * (1 + HERO.hpPerLevel * l('maxHp')) * milestone(l('maxHp'));
@@ -92,6 +93,55 @@ export function expectedDps(stats, damageMult = 1, fireRateMult = 1) {
   return stats.damage * damageMult * stats.fireRate * fireRateMult * critFactor;
 }
 
+// ---------- Оружие ----------
+export function gunInfo(tier) {
+  const t = Math.max(1, Math.min(MAX_GUN_TIER, tier));
+  const family = GUN_FAMILIES[Math.floor((t - 1) / RARITIES.length)];
+  const rarity = RARITIES[(t - 1) % RARITIES.length];
+  return {
+    tier: t,
+    family,
+    rarity,
+    name: `${family.name} ${(t - 1) % RARITIES.length + 1}★`,
+    power: GUN_TIER_POWER ** (t - 1),
+  };
+}
+
+export const gunCost = (bought) => Math.ceil(GUN_COST.base * GUN_COST.growth ** bought);
+
+// Уровень покупаемой пушки зависит от прокачки Кузни.
+export const buyTier = (forgeLevel) => Math.min(MAX_GUN_TIER, 1 + forgeLevel);
+
+// ---------- Отряд ----------
+// slots — массив уровней пушек в слотах (0 — пусто). Котик в слоте появляется, только если есть пушка.
+export function squadStats(levels, bones, slots, maxStage = Infinity) {
+  const base = heroStats(levels, bones);
+  const active = slots.map((tier, i) => tier > 0 && CATS[i] && CATS[i].unlockStage <= maxStage);
+  const bonus = { teamDamage: 0, critChance: 0, fireRate: 0 };
+  active.forEach((on, i) => {
+    if (!on) return;
+    for (const k of Object.keys(bonus)) bonus[k] += CATS[i][k] ?? 0;
+  });
+  const cats = slots.map((tier, i) => {
+    if (!active[i]) return null;
+    const gun = gunInfo(tier);
+    return {
+      gun,
+      damage: base.damage * gun.power * gun.family.damage * (1 + bonus.teamDamage),
+      fireRate: base.fireRate * gun.family.rate * (1 + bonus.fireRate),
+      pellets: gun.family.pellets,
+      pierce: gun.family.pierce,
+      critChance: Math.min(0.75, base.critChance + bonus.critChance),
+      critMult: base.critMult,
+    };
+  });
+  return { ...base, cats };
+}
+
+export function squadDps(squad, damageMult = 1, fireRateMult = 1) {
+  return squad.cats.reduce((sum, c) => (c ? sum + expectedDps(c, damageMult, fireRateMult) * c.pellets : sum), 0);
+}
+
 // ---------- Перерождение ----------
 export function bonesForPrestige(maxStage) {
   if (maxStage < PRESTIGE_MIN_STAGE) return 0;
@@ -100,10 +150,11 @@ export function bonesForPrestige(maxStage) {
 
 // ---------- Оффлайн-доход ----------
 // Приблизительное золото в секунду при фарме обычного этапа.
-export function idleGoldPerSecond(stage, stats, spawnInterval) {
+export function idleGoldPerSecond(stage, squad, spawnInterval) {
   const farmStage = isBossStage(stage) ? Math.max(1, stage - 1) : stage;
-  const killTime = Math.max(enemyHp(farmStage) / expectedDps(stats), spawnInterval);
-  return (enemyGold(farmStage) * stats.goldMult) / killTime;
+  const dps = Math.max(squadDps(squad), 1e-9);
+  const killTime = Math.max(enemyHp(farmStage) / dps, spawnInterval);
+  return (enemyGold(farmStage) * squad.goldMult) / killTime;
 }
 
 // ---------- Форматирование чисел ----------

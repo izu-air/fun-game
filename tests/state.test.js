@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createState, buyUpgrade, nextCost, prestige, canPrestige, applyOffline, serialize, deserialize,
-  saveToStorage, loadFromStorage,
+  saveToStorage, loadFromStorage, buyGun, addGun, mergeGuns, mergeAll, equipGun, equipBest,
+  nextGunCost,
 } from '../src/state.js';
-import { UPGRADES, OFFLINE_MAX_SECONDS } from '../src/config.js';
+import { UPGRADES, OFFLINE_MAX_SECONDS, INVENTORY_SIZE, CATS } from '../src/config.js';
 
 function memoryStorage() {
   const map = new Map();
@@ -124,4 +125,101 @@ test('localStorage-обёртка', () => {
   const broken = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
   assert.equal(loadFromStorage(broken), null);
   assert.equal(saveToStorage(s, broken), false);
+});
+
+test('новая игра: у Рыжика стартовый пистолет, инвентарь пуст', () => {
+  const s = createState();
+  assert.equal(s.slots[0], 1);
+  assert.equal(s.guns.length, INVENTORY_SIZE);
+  assert.ok(s.guns.every((g) => g === 0));
+});
+
+test('покупка пушки дорожает, кузня повышает уровень', () => {
+  const s = createState();
+  s.gold = 1e6;
+  const c0 = nextGunCost(s);
+  const i = buyGun(s);
+  assert.equal(s.guns[i], 1);
+  assert.ok(nextGunCost(s) > c0);
+  s.levels.forge = 2;
+  assert.equal(s.guns[buyGun(s)], 3);
+});
+
+test('нельзя купить пушку без денег или в полный арсенал', () => {
+  const s = createState();
+  assert.equal(buyGun(s), -1);
+  s.gold = 1e9;
+  s.guns.fill(1);
+  assert.equal(buyGun(s), -1);
+});
+
+test('слияние только одинаковых пушек', () => {
+  const s = createState();
+  addGun(s, 2);
+  addGun(s, 2);
+  addGun(s, 3);
+  assert.equal(mergeGuns(s, 0, 2), false);
+  assert.equal(mergeGuns(s, 0, 1), true);
+  assert.equal(s.guns[1], 3);
+  assert.equal(s.guns[0], 0);
+  assert.equal(s.stats.bestGun, 3);
+  assert.equal(mergeGuns(s, 1, 1), false);
+});
+
+test('слить всё: 4 пистолета превращаются в одну пушку 3-го уровня', () => {
+  const s = createState();
+  for (let k = 0; k < 4; k++) addGun(s, 1);
+  assert.equal(mergeAll(s), 3);
+  assert.deepEqual(s.guns.filter(Boolean), [3]);
+});
+
+test('экипировка меняет пушки местами и уважает закрытые слоты', () => {
+  const s = createState();
+  addGun(s, 4);
+  assert.equal(equipGun(s, 0, 0), true);
+  assert.equal(s.slots[0], 4);
+  assert.equal(s.guns[0], 1);
+  assert.equal(equipGun(s, 0, 2), false, 'Уголёк ещё не в отряде');
+});
+
+test('лучшее снаряжение раздаётся открытым котикам', () => {
+  const s = createState();
+  s.maxStage = CATS[1].unlockStage;
+  [2, 5, 3].forEach((t) => addGun(s, t));
+  equipBest(s);
+  assert.deepEqual(s.slots, [5, 3, 0]);
+  assert.deepEqual(s.guns.filter(Boolean).sort(), [1, 2]);
+});
+
+test('перерождение сбрасывает оружие к стартовому', () => {
+  const s = createState();
+  s.maxStage = 40;
+  addGun(s, 7);
+  s.slots = [9, 8, 0];
+  s.gunsBought = 30;
+  prestige(s);
+  assert.deepEqual(s.slots, [1, 0, 0]);
+  assert.ok(s.guns.every((g) => g === 0));
+  assert.equal(s.gunsBought, 0);
+});
+
+test('сохранение первой версии получает стартовый пистолет', () => {
+  const old = JSON.stringify({ version: 1, gold: 50, stage: 7, maxStage: 9, levels: { damage: 3 } });
+  const s = deserialize(old);
+  assert.deepEqual(s.slots, [1, 0, 0]);
+  assert.equal(s.levels.forge, 0);
+  assert.equal(s.stats.bestGun, 1);
+});
+
+test('оружие сохраняется и восстанавливается', () => {
+  const s = createState();
+  addGun(s, 12);
+  s.slots = [6, 2, 0];
+  const back = deserialize(serialize(s));
+  assert.equal(back.guns[0], 12);
+  assert.deepEqual(back.slots, [6, 2, 0]);
+  const bad = deserialize(JSON.stringify({ guns: [999, -1, 'x'], slots: [3] }));
+  assert.equal(bad.guns[0], 30);
+  assert.equal(bad.guns[1], 0);
+  assert.deepEqual(bad.slots, [3, 0, 0]);
 });

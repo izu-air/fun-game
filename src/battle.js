@@ -1,33 +1,52 @@
-// Боевая симуляция: котик, враги, пули, эффекты. Не сохраняется — живёт только в сессии.
+// Боевая симуляция: отряд котиков идёт вперёд, сносит препятствия и отстреливается от врагов.
+// Не сохраняется — живёт только в сессии.
 import {
-  ENEMIES_PER_STAGE, BOSS_TIME_LIMIT, MAX_ALIVE_ENEMIES, SPAWN_INTERVAL, ENEMY, ENEMY_TYPES,
-  HERO, SKILLS,
+  ENEMIES_PER_STAGE, BOSS_TIME_LIMIT, MAX_ALIVE_ENEMIES, ENEMY, ENEMY_TYPES, HERO, SKILLS,
+  MARCH_SPEED, SPAWN_GAP, CRATE_GUN_CHANCE,
 } from './config.js';
 import {
-  isBossStage, enemyHp, enemyDamage, enemyGold, pickEnemyType, formatNumber,
+  isBossStage, enemyHp, enemyDamage, enemyGold, pickEnemyType, formatNumber, buyTier,
 } from './formulas.js';
-import { statsOf, addGold, isSkillUnlocked } from './state.js';
+import { statsOf, addGold, isSkillUnlocked, addGun } from './state.js';
 
-export const WORLD = { width: 480, height: 340, groundY: 278, heroX: 70 };
+export const WORLD = { width: 480, height: 340, groundY: 278 };
+// Позиции котиков в строю: первый слот впереди, остальные чуть дальше от зрителя.
+export const SQUAD = [
+  { x: 150, y: 0, scale: 1 },
+  { x: 98, y: -12, scale: 0.9 },
+  { x: 50, y: -24, scale: 0.8 },
+];
+export const FRONT_X = SQUAD[0].x + 26;
+
+const BULLET_TURN_RATE = 9; // рад/с — пули доворачивают к цели, дробь сначала разлетается веером
 
 export class Battle {
   constructor(state, events = {}) {
     this.state = state;
-    this.events = events; // { onStageStart, onStageFail, onBossKill, onMessage }
+    // { onStageStart, onStageFail, onBossKill, onGunDrop, sfx }
+    this.events = events;
     this.time = 0;
+    this.scroll = 0;
+    this.walking = true;
     this.shake = 0;
     this.buffs = { volley: 0, rage: 0 };
     this.cooldowns = Object.fromEntries(Object.keys(SKILLS).map((k) => [k, 0]));
-    this.hero = { hp: statsOf(state).maxHp, fireCd: 0, recoil: 0, hurt: 0, aim: 0 };
+    this.squad = statsOf(state);
+    this.hero = { hp: this.squad.maxHp, hurt: 0 };
+    this.cats = SQUAD.map(() => ({ fireCd: Math.random() * 0.3, recoil: 0, aim: 0 }));
     this.startStage();
   }
 
   get stats() {
-    return statsOf(this.state);
+    return this.squad;
   }
 
   get isBoss() {
     return isBossStage(this.state.stage);
+  }
+
+  get stageTarget() {
+    return this.isBoss ? 1 : ENEMIES_PER_STAGE;
   }
 
   startStage() {
@@ -37,10 +56,17 @@ export class Battle {
     this.texts = [];
     this.spawned = 0;
     this.killed = 0;
-    this.spawnCd = 0.4;
+    this.nextSpawnIn = 0;
     this.bossTimer = BOSS_TIME_LIMIT;
     this.stageClearDelay = 0;
     this.events.onStageStart?.(this.state.stage, this.isBoss);
+  }
+
+  // Пересчитать характеристики после покупки или смены оружия.
+  refresh() {
+    const before = this.squad.maxHp;
+    this.squad = statsOf(this.state);
+    this.hero.hp = Math.min(this.squad.maxHp, this.hero.hp + Math.max(0, this.squad.maxHp - before));
   }
 
   // ---------- Навыки ----------
@@ -54,12 +80,12 @@ export class Battle {
     this.cooldowns[key] = skill.cooldown;
     if (skill.duration > 0) this.buffs[key] = skill.duration;
     if (skill.healPct) {
-      const s = this.stats;
-      const heal = s.maxHp * skill.healPct;
-      this.hero.hp = Math.min(s.maxHp, this.hero.hp + heal);
-      this.floatText(WORLD.heroX, WORLD.groundY - 70, '+' + formatNumber(heal), '#4ade80', 20);
+      const heal = this.squad.maxHp * skill.healPct;
+      this.hero.hp = Math.min(this.squad.maxHp, this.hero.hp + heal);
+      this.floatText(SQUAD[0].x, WORLD.groundY - 80, '+' + formatNumber(heal), '#4ade80', 20);
     }
-    this.burst(WORLD.heroX, WORLD.groundY - 30, '#ffd166', 18, 160);
+    this.burst(SQUAD[1].x, WORLD.groundY - 30, '#ffd166', 18, 160);
+    this.events.sfx?.('skill');
     return true;
   }
 
@@ -69,7 +95,7 @@ export class Battle {
     this.state.autoAdvance = true;
     this.state.stage += 1;
     this.state.maxStage = Math.max(this.state.maxStage, this.state.stage);
-    this.hero.hp = this.stats.maxHp;
+    this.hero.hp = this.squad.maxHp;
     this.startStage();
   }
 
@@ -77,49 +103,59 @@ export class Battle {
   update(dt) {
     this.time += dt;
     this.state.stats.playTime += dt;
-    const stats = this.stats;
+    this.squad = statsOf(this.state);
+    const squad = this.squad;
 
     for (const k of Object.keys(this.cooldowns)) this.cooldowns[k] = Math.max(0, this.cooldowns[k] - dt);
     for (const k of Object.keys(this.buffs)) this.buffs[k] = Math.max(0, this.buffs[k] - dt);
-    if (this.state.autoSkills) this.autoCast(stats);
+    if (this.state.autoSkills) this.autoCast(squad);
 
-    this.hero.hp = Math.min(stats.maxHp, this.hero.hp + stats.regen * dt);
-    this.hero.recoil = Math.max(0, this.hero.recoil - dt * 8);
+    this.hero.hp = Math.min(squad.maxHp, this.hero.hp + squad.regen * dt);
     this.hero.hurt = Math.max(0, this.hero.hurt - dt * 4);
+    for (const c of this.cats) c.recoil = Math.max(0, c.recoil - dt * 8);
     this.shake = Math.max(0, this.shake - dt * 30);
+
+    this.walking = this.stageClearDelay <= 0 && !this.enemies.some((e) => e.x <= this.stopX(e) + 0.5);
+    const march = this.walking ? MARCH_SPEED * dt : 0;
+    this.scroll += march;
 
     if (this.stageClearDelay > 0) {
       this.stageClearDelay -= dt;
       if (this.stageClearDelay <= 0) this.advance();
     } else {
-      this.updateSpawning(dt);
-      if (this.isBoss && this.enemies.length > 0) {
+      this.updateSpawning(march);
+      if (this.isBoss && this.enemies.some((e) => e.isBoss)) {
         this.bossTimer -= dt;
         if (this.bossTimer <= 0) return this.fail('Время вышло! Босс сбежал 🐶');
       }
     }
 
-    this.updateShooting(dt, stats);
-    this.updateBullets(dt, stats);
-    this.updateEnemies(dt);
-    this.updateEffects(dt);
+    this.updateShooting(dt, squad);
+    this.updateBullets(dt, squad);
+    this.updateEnemies(dt, march);
+    this.updateEffects(dt, march);
 
-    if (this.hero.hp <= 0) this.fail('Котик устал… Отступаем на этап назад 😿');
+    if (this.hero.hp <= 0) this.fail('Отряд устал… Отступаем на этап назад 😿');
   }
 
-  autoCast(stats) {
-    const hasEnemies = this.enemies.length > 0;
-    if (hasEnemies && this.canCast('volley')) this.cast('volley');
-    if (hasEnemies && this.canCast('rage')) this.cast('rage');
-    if (this.hero.hp < stats.maxHp * 0.5 && this.canCast('purr')) this.cast('purr');
+  autoCast(squad) {
+    const hasTargets = this.enemies.length > 0;
+    if (hasTargets && this.canCast('volley')) this.cast('volley');
+    if (hasTargets && this.canCast('rage')) this.cast('rage');
+    if (this.hero.hp < squad.maxHp * 0.5 && this.canCast('purr')) this.cast('purr');
   }
 
-  updateSpawning(dt) {
-    const target = this.isBoss ? 1 : ENEMIES_PER_STAGE;
-    if (this.spawned >= target) return;
-    this.spawnCd -= dt;
-    if (this.spawnCd > 0 || this.enemies.length >= MAX_ALIVE_ENEMIES) return;
-    this.spawnCd = SPAWN_INTERVAL * (0.7 + Math.random() * 0.6);
+  // Где цель останавливается перед отрядом: у зверей голова выступает вперёд примерно на 1.4 размера.
+  stopX(e) {
+    return FRONT_X + e.size * (e.obstacle ? 1.1 : 1.4);
+  }
+
+  // Новые цели появляются по мере продвижения отряда.
+  updateSpawning(march) {
+    if (this.spawned >= this.stageTarget) return;
+    this.nextSpawnIn -= march;
+    if (this.nextSpawnIn > 0 || this.enemies.length >= MAX_ALIVE_ENEMIES) return;
+    this.nextSpawnIn = SPAWN_GAP[0] + Math.random() * (SPAWN_GAP[1] - SPAWN_GAP[0]);
     this.spawnEnemy(this.isBoss ? 'boss' : pickEnemyType(this.state.stage));
     this.spawned++;
   }
@@ -131,6 +167,9 @@ export class Battle {
     this.enemies.push({
       type,
       isBoss: type === 'boss',
+      obstacle: !!t.obstacle,
+      runner: !!t.runner,
+      fleeing: false,
       x: WORLD.width + t.size + 10,
       y: WORLD.groundY,
       hp,
@@ -143,125 +182,174 @@ export class Battle {
       phase: Math.random() * Math.PI * 2,
       flash: 0,
       lunge: 0,
+      variant: Math.random(),
     });
+    if (type === 'goldMouse') this.floatText(WORLD.width - 60, WORLD.groundY - 60, 'Золотая мышь!', '#ffd700', 16);
   }
 
-  updateShooting(dt, stats) {
+  updateShooting(dt, squad) {
     const target = this.nearestEnemy();
-    this.hero.fireCd -= dt;
-    if (!target) {
-      this.hero.aim *= 0.9;
-      return;
-    }
-    const gunX = WORLD.heroX + 34;
-    const gunY = WORLD.groundY - 34;
-    this.hero.aim = Math.atan2(target.y - target.size * 0.6 - gunY, target.x - gunX);
-    if (this.hero.fireCd > 0) return;
-
-    const fireRate = stats.fireRate * (this.buffs.volley > 0 ? SKILLS.volley.fireRateMult : 1);
-    this.hero.fireCd = 1 / fireRate;
-    const crit = Math.random() < stats.critChance;
+    const volley = this.buffs.volley > 0 ? SKILLS.volley.fireRateMult : 1;
     const rage = this.buffs.rage > 0 ? SKILLS.rage.damageMult : 1;
-    const dmg = stats.damage * rage * (crit ? stats.critMult : 1);
-    this.bullets.push({
-      x: gunX + Math.cos(this.hero.aim) * 18,
-      y: gunY + Math.sin(this.hero.aim) * 18,
-      target,
-      dmg,
-      crit,
-      angle: this.hero.aim,
+    squad.cats.forEach((cat, i) => {
+      const c = this.cats[i];
+      c.fireCd -= dt;
+      if (!cat) return;
+      const pos = SQUAD[i];
+      const gunX = pos.x + 34 * pos.scale;
+      const gunY = WORLD.groundY + pos.y - 34 * pos.scale;
+      if (!target) {
+        c.aim *= 0.9;
+        return;
+      }
+      c.aim = Math.atan2(target.y - target.size * 0.6 - gunY, target.x - gunX);
+      if (c.fireCd > 0) return;
+      c.fireCd = 1 / (cat.fireRate * volley);
+      c.recoil = 1;
+      for (let p = 0; p < cat.pellets; p++) {
+        const crit = Math.random() < cat.critChance;
+        const spread = cat.pellets > 1 ? (p - (cat.pellets - 1) / 2) * 0.35 : 0;
+        const angle = c.aim + spread;
+        this.bullets.push({
+          x: gunX + Math.cos(angle) * 18,
+          y: gunY + Math.sin(angle) * 18,
+          target,
+          dmg: cat.damage * rage * (crit ? cat.critMult : 1),
+          crit,
+          angle,
+          pierce: cat.pierce,
+          hitSet: null,
+          family: cat.gun.family.key,
+          color: cat.gun.rarity.color,
+        });
+      }
+      this.events.sfx?.('shot', cat.gun.family.key);
     });
-    this.hero.recoil = 1;
   }
 
-  nearestEnemy() {
+  nearestEnemy(exclude) {
     let best = null;
     for (const e of this.enemies) {
-      if (e.hp > 0 && e.x < WORLD.width + 4 && (!best || e.x < best.x)) best = e;
+      if (e.hp > 0 && e.x < WORLD.width + 4 && !exclude?.has(e) && (!best || e.x < best.x)) best = e;
     }
     return best;
   }
 
-  updateBullets(dt, stats) {
+  updateBullets(dt, squad) {
     const speed = HERO.bulletSpeed * dt;
     for (const b of this.bullets) {
-      // Самонаведение: если цель погибла — летим к ближайшей живой.
-      if (!b.target || b.target.hp <= 0) b.target = this.nearestEnemy();
-      if (!b.target) {
-        b.x += Math.cos(b.angle) * speed;
-        b.y += Math.sin(b.angle) * speed;
-        if (b.x > WORLD.width + 40) b.dead = true;
-        continue;
+      if (!b.target || b.target.hp <= 0 || !this.enemies.includes(b.target)) b.target = this.nearestEnemy(b.hitSet);
+      if (b.target) {
+        const tx = b.target.x;
+        const ty = b.target.y - b.target.size * 0.6;
+        const want = Math.atan2(ty - b.y, tx - b.x);
+        let diff = want - b.angle;
+        diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+        const maxTurn = BULLET_TURN_RATE * dt;
+        b.angle += Math.max(-maxTurn, Math.min(maxTurn, diff));
+        if (Math.hypot(tx - b.x, ty - b.y) <= speed + b.target.size * 0.6) {
+          this.hit(b.target, b.dmg, b.crit, squad);
+          if (b.pierce > 0) {
+            b.pierce--;
+            (b.hitSet ??= new Set()).add(b.target);
+            b.target = null;
+          } else {
+            b.dead = true;
+          }
+        }
       }
-      const tx = b.target.x;
-      const ty = b.target.y - b.target.size * 0.6;
-      b.angle = Math.atan2(ty - b.y, tx - b.x);
-      const dist = Math.hypot(tx - b.x, ty - b.y);
-      if (dist <= speed + b.target.size * 0.5) {
-        this.hit(b.target, b.dmg, b.crit, stats);
-        b.dead = true;
-      } else {
-        b.x += Math.cos(b.angle) * speed;
-        b.y += Math.sin(b.angle) * speed;
-      }
+      b.x += Math.cos(b.angle) * speed;
+      b.y += Math.sin(b.angle) * speed;
+      if (b.x > WORLD.width + 40 || b.y < -40 || b.y > WORLD.height + 40) b.dead = true;
     }
     this.bullets = this.bullets.filter((b) => !b.dead);
   }
 
-  hit(enemy, dmg, crit, stats) {
+  hit(enemy, dmg, crit, squad) {
+    if (enemy.hp <= 0) return;
     enemy.hp -= dmg;
     enemy.flash = 1;
-    enemy.x += enemy.isBoss ? 1 : 4; // лёгкая отдача
+    if (!enemy.obstacle && !enemy.isBoss) enemy.x += 3; // лёгкая отдача
     this.floatText(
       enemy.x + (Math.random() - 0.5) * 16,
-      enemy.y - enemy.size * 1.4,
+      enemy.y - enemy.size * 1.5,
       formatNumber(dmg) + (crit ? '!' : ''),
       crit ? '#ff4d6d' : '#ffffff',
       crit ? 20 : 14,
     );
-    this.burst(enemy.x - enemy.size * 0.5, enemy.y - enemy.size * 0.6, crit ? '#ff4d6d' : '#ffd166', crit ? 8 : 4, 120);
+    const chip = enemy.obstacle ? (enemy.type === 'rock' ? '#9aa0a6' : enemy.type === 'crate' ? '#c8894a' : '#7a5230') : crit ? '#ff4d6d' : '#ffd166';
+    this.burst(enemy.x - enemy.size * 0.5, enemy.y - enemy.size * 0.6, chip, crit ? 8 : 4, 120);
     if (crit) this.shake = Math.max(this.shake, 3);
-    if (enemy.hp <= 0) this.kill(enemy, stats);
+    if (enemy.hp <= 0) this.kill(enemy, squad);
   }
 
-  kill(enemy, stats) {
-    const gold = enemy.gold * stats.goldMult;
+  kill(enemy, squad) {
+    const gold = enemy.gold * squad.goldMult;
     addGold(this.state, gold);
-    this.state.stats.kills++;
+    if (!enemy.obstacle) this.state.stats.kills++;
     this.killed++;
-    this.floatText(enemy.x, enemy.y - enemy.size * 2, '+' + formatNumber(gold) + ' 🪙', '#ffd700', enemy.isBoss ? 26 : 16);
-    this.burst(enemy.x, enemy.y - enemy.size * 0.5, '#bbbbbb', enemy.isBoss ? 40 : 12, enemy.isBoss ? 260 : 160);
-    for (let i = 0; i < (enemy.isBoss ? 12 : 3); i++) this.coin(enemy.x, enemy.y - enemy.size * 0.5);
+    this.floatText(enemy.x, enemy.y - enemy.size * 2.1, '+' + formatNumber(gold) + ' 🪙', '#ffd700', enemy.isBoss || enemy.runner ? 24 : 16);
+    const debris = enemy.obstacle ? (enemy.type === 'rock' ? '#8d939a' : enemy.type === 'crate' ? '#b5763b' : '#5b8f3a') : '#bbbbbb';
+    this.burst(enemy.x, enemy.y - enemy.size * 0.5, debris, enemy.isBoss ? 40 : 14, enemy.isBoss ? 260 : 170);
+    for (let i = 0; i < (enemy.isBoss || enemy.runner ? 12 : 3); i++) this.coin(enemy.x, enemy.y - enemy.size * 0.5);
+    this.events.sfx?.(enemy.obstacle ? 'break' : 'coin');
+    if (ENEMY_TYPES[enemy.type].dropsGun && Math.random() < CRATE_GUN_CHANCE) this.dropGun(enemy);
     if (enemy.isBoss) {
       this.state.stats.bossKills++;
       this.shake = 12;
       this.events.onBossKill?.(this.state.stage);
     }
-    this.enemies = this.enemies.filter((e) => e !== enemy);
-
-    const target = this.isBoss ? 1 : ENEMIES_PER_STAGE;
-    if (this.killed >= target) this.stageClearDelay = enemy.isBoss ? 1.2 : 0.6;
+    this.removeEnemy(enemy);
   }
 
-  updateEnemies(dt) {
-    const meleeX = WORLD.heroX + 30;
-    for (const e of this.enemies) {
-      e.phase += dt * (e.speed / 8);
+  dropGun(enemy) {
+    const tier = buyTier(this.state.levels.forge ?? 0);
+    const placed = addGun(this.state, tier) >= 0;
+    this.floatText(enemy.x, enemy.y - enemy.size * 3, placed ? '🔫 Пушка!' : 'Арсенал полон', placed ? '#7dd3fc' : '#fca5a5', 16);
+    this.events.onGunDrop?.(tier, placed);
+  }
+
+  removeEnemy(enemy) {
+    this.enemies = this.enemies.filter((e) => e !== enemy);
+    if (this.killed >= this.stageTarget && this.stageClearDelay <= 0) {
+      this.stageClearDelay = enemy.isBoss ? 1.2 : 0.6;
+    }
+  }
+
+  updateEnemies(dt, march) {
+    const fleeX = WORLD.width * 0.62;
+    for (const e of [...this.enemies]) {
+      e.phase += dt * ((e.speed || MARCH_SPEED) / 8);
       e.flash = Math.max(0, e.flash - dt * 6);
       e.lunge = Math.max(0, e.lunge - dt * 4);
-      const stopX = meleeX + e.size;
-      if (e.x > stopX) {
-        e.x = Math.max(stopX, e.x - e.speed * dt);
-      } else {
-        e.attackCd -= dt;
-        if (e.attackCd <= 0) {
-          e.attackCd = ENEMY.attackInterval;
-          e.lunge = 1;
-          this.hero.hp -= e.damage;
-          this.hero.hurt = 1;
-          this.shake = Math.max(this.shake, e.isBoss ? 8 : 3);
-          this.floatText(WORLD.heroX, WORLD.groundY - 80, '-' + formatNumber(e.damage), '#ff6b6b', 16);
+      const stopX = this.stopX(e);
+
+      if (e.runner) {
+        // Золотая мышь подбегает, разворачивается и удирает.
+        if (!e.fleeing && e.x <= fleeX) e.fleeing = true;
+        e.x += (e.fleeing ? e.speed * 1.6 : -e.speed) * dt - march;
+        if (e.fleeing && e.x > WORLD.width + 40) {
+          this.floatText(WORLD.width - 50, WORLD.groundY - 60, 'Убежала!', '#fca5a5', 14);
+          this.killed++;
+          this.removeEnemy(e);
         }
+        continue;
+      }
+
+      if (e.x > stopX) {
+        e.x = Math.max(stopX, e.x - e.speed * dt - march);
+        continue;
+      }
+      if (e.obstacle) continue;
+      e.attackCd -= dt;
+      if (e.attackCd <= 0) {
+        e.attackCd = ENEMY.attackInterval;
+        e.lunge = 1;
+        this.hero.hp -= e.damage;
+        this.hero.hurt = 1;
+        this.shake = Math.max(this.shake, e.isBoss ? 8 : 3);
+        this.floatText(SQUAD[0].x, WORLD.groundY - 90, '-' + formatNumber(e.damage), '#ff6b6b', 16);
+        this.events.sfx?.('hurt');
       }
     }
   }
@@ -279,7 +367,8 @@ export class Battle {
     const s = this.state;
     s.stage = Math.max(1, s.stage - 1);
     s.autoAdvance = false;
-    this.hero.hp = this.stats.maxHp;
+    this.squad = statsOf(s);
+    this.hero.hp = this.squad.maxHp;
     this.events.onStageFail?.(message);
     this.startStage();
   }
@@ -310,9 +399,9 @@ export class Battle {
     });
   }
 
-  updateEffects(dt) {
+  updateEffects(dt, march) {
     for (const p of this.particles) {
-      p.x += p.vx * dt;
+      p.x += p.vx * dt - march;
       p.y += p.vy * dt;
       p.vy += 500 * dt;
       if (p.coin && p.y > WORLD.groundY) {
