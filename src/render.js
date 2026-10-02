@@ -1,223 +1,267 @@
-// Процедурная отрисовка: фон биома с параллаксом, отряд котиков, оружие, враги, препятствия, эффекты.
-import { WORLD, SQUAD } from './battle.js';
+// Процедурная отрисовка арены (вид сверху, фигурки «в три четверти»): земля локации, отряд котиков,
+// воительницы, добыча на земле, пули, эффекты и полоски здоровья.
+import { WORLD } from './battle.js';
 import { biomeFor } from './formulas.js';
-import { CATS, TAP } from './config.js';
+import { CATS, ARENA } from './config.js';
 import { drawGirl, lookFor, drawPuck } from './girls.js';
 
 const TAU = Math.PI * 2;
+const BACK_WALL = 34; // высота «задней стены» локации вверху арены
 
-// Декор генерируется один раз детерминированно, чтобы не мерцал.
+// Декор генерируется детерминированно, чтобы не мерцал.
 function seeded(seed) {
   let s = seed;
   return () => ((s = (s * 16807) % 2147483647) - 1) / 2147483646;
 }
 const rnd = seeded(42);
-const STARS = Array.from({ length: 70 }, () => ({ x: rnd() * WORLD.width, y: rnd() * WORLD.groundY * 0.8, r: rnd() * 1.4 + 0.4, t: rnd() * TAU }));
-const BUILDINGS = Array.from({ length: 14 }, (_, i) => ({ x: i * 42, w: 34 + rnd() * 14, h: 70 + rnd() * 110, win: rnd() }));
-const CLOUDS = Array.from({ length: 4 }, () => ({ x: rnd() * WORLD.width, y: 30 + rnd() * 80, s: 0.7 + rnd() * 0.6 }));
-const SNOW = Array.from({ length: 50 }, () => ({ x: rnd() * WORLD.width, y: rnd() * WORLD.height, s: 0.6 + rnd() * 1.6, v: 15 + rnd() * 25 }));
-
-// Повторяющийся по горизонтали элемент с параллаксом.
-const wrap = (x, offset, span) => ((((x - offset) % span) + span) % span) - 60;
+const STARS = Array.from({ length: 60 }, () => ({ x: rnd() * WORLD.width, y: rnd() * WORLD.height, r: rnd() * 1.3 + 0.3, t: rnd() * TAU }));
+const PATCHES = Array.from({ length: 40 }, () => ({ x: rnd() * WORLD.width, y: BACK_WALL + rnd() * (WORLD.height - BACK_WALL), r: 8 + rnd() * 22, k: rnd() }));
+const WALL = Array.from({ length: 13 }, (_, i) => ({ x: i * 40 + rnd() * 16 - 8, s: 0.8 + rnd() * 0.4, k: rnd() }));
 
 export function render(ctx, battle, time) {
   const { width: W, height: H } = WORLD;
   const biome = biomeFor(battle.state.stage);
   ctx.save();
-  if (battle.shake > 0) {
-    ctx.translate((Math.random() - 0.5) * battle.shake, (Math.random() - 0.5) * battle.shake);
+  if (battle.shake > 0) ctx.translate((Math.random() - 0.5) * battle.shake, (Math.random() - 0.5) * battle.shake);
+  drawArena(ctx, biome, time);
+  drawPickups(ctx, battle.pickups, time);
+  if (battle.manual && battle.input.target) drawTargetMarker(ctx, battle.input.target, time);
+
+  // все фигуры сортируются по y: кто ниже на экране — тот ближе к зрителю
+  const figures = [];
+  for (const e of battle.enemies) figures.push({ y: e.y, draw: () => drawFigure(ctx, e, time, battle, biome) });
+  for (const i of battle.activeCats) {
+    const c = battle.cats[i];
+    figures.push({ y: c.y, draw: () => drawArenaCat(ctx, battle, i, battle.squad.cats[i], time) });
   }
-  drawBackground(ctx, biome, battle.scroll, time);
-  // сначала дальние препятствия, затем враги поверх
-  const sorted = [...battle.enemies].sort((a, b) => (a.obstacle === b.obstacle ? b.x - a.x : a.obstacle ? -1 : 1));
-  for (const e of sorted) {
-    if (e.obstacle) drawObstacle(ctx, e, time, biome);
-    else if (e.girl) drawGirlEnemy(ctx, e, time, battle);
-    else drawEnemy(ctx, e, time);
-  }
-  drawSquad(ctx, battle, time);
+  figures.sort((a, b) => a.y - b.y);
+  for (const f of figures) f.draw();
+
   drawOrbs(ctx, battle.orbs, time);
   drawBullets(ctx, battle.bullets);
   drawParticles(ctx, battle.particles);
-  if (battle.chest) drawChest(ctx, battle.chest, time);
   drawTexts(ctx, battle.texts);
   ctx.restore();
-  if (battle.combo.count >= 3) drawCombo(ctx, battle.combo, time);
 
   if (battle.buffs.rage > 0) {
-    ctx.fillStyle = `rgba(255, 60, 60, ${0.08 + Math.sin(time * 8) * 0.04})`;
+    ctx.fillStyle = `rgba(255, 60, 60, ${0.07 + Math.sin(time * 8) * 0.03})`;
     ctx.fillRect(0, 0, W, H);
   }
   if (battle.freeze > 0) {
-    ctx.fillStyle = `rgba(165, 216, 255, ${Math.min(0.35, battle.freeze * 0.3)})`;
+    ctx.fillStyle = `rgba(165, 216, 255, ${Math.min(0.3, battle.freeze * 0.25)})`;
     ctx.fillRect(0, 0, W, H);
   }
   if (battle.hero.hurt > 0) {
     const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.8);
     g.addColorStop(0, 'rgba(255,0,0,0)');
-    g.addColorStop(1, `rgba(255,0,0,${battle.hero.hurt * 0.35})`);
+    g.addColorStop(1, `rgba(255,0,0,${battle.hero.hurt * 0.3})`);
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, H);
   }
+  drawHud(ctx, battle);
 }
 
-// ---------- Фон ----------
-function drawBackground(ctx, biome, scroll, time) {
-  const { width: W, height: H, groundY } = WORLD;
-  const sky = ctx.createLinearGradient(0, 0, 0, groundY);
+function drawFigure(ctx, e, time, battle, biome) {
+  if (e.obstacle) drawObstacle(ctx, e, time, biome);
+  else if (e.girl) drawGirlEnemy(ctx, e, time, battle);
+  else drawEnemy(ctx, e, time);
+}
+
+// ---------- Арена ----------
+function drawArena(ctx, biome, time) {
+  const { width: W, height: H } = WORLD;
+  ctx.fillStyle = biome.ground;
+  ctx.fillRect(-20, -20, W + 40, H + 40);
+
+  // пятна и плитка на земле
+  if (biome.decor === 'city' || biome.decor === 'roofs') {
+    ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+    ctx.lineWidth = 1;
+    const step = biome.decor === 'city' ? 32 : 24;
+    ctx.beginPath();
+    for (let x = 0; x <= W; x += step) {
+      ctx.moveTo(x + 0.5, BACK_WALL);
+      ctx.lineTo(x + 0.5, H);
+    }
+    for (let y = BACK_WALL; y <= H; y += step / 2) {
+      ctx.moveTo(0, y + 0.5);
+      ctx.lineTo(W, y + 0.5);
+    }
+    ctx.stroke();
+  } else {
+    for (const p of PATCHES) {
+      ctx.fillStyle = biome.decor === 'snow'
+        ? (p.k > 0.5 ? 'rgba(255,255,255,0.6)' : 'rgba(150,185,225,0.16)')
+        : (p.k > 0.5 ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)');
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y, p.r, p.r * 0.55, 0, 0, TAU);
+      ctx.fill();
+    }
+  }
+  if (biome.decor === 'space') {
+    for (const s of STARS) {
+      ctx.fillStyle = `rgba(255,255,255,${0.25 + Math.sin(time * 3 + s.t) * 0.2})`;
+      circle(ctx, s.x, s.y, s.r);
+    }
+  }
+
+  // «задняя стена» локации — небо и декор вверху арены
+  const sky = ctx.createLinearGradient(0, 0, 0, BACK_WALL);
   sky.addColorStop(0, biome.sky[0]);
   sky.addColorStop(1, biome.sky[1]);
   ctx.fillStyle = sky;
-  ctx.fillRect(-20, -20, W + 40, groundY + 20);
-
-  switch (biome.decor) {
-    case 'garden': drawForest(ctx, scroll, time); break;
-    case 'desert': drawDesert(ctx, scroll); break;
-    case 'snow': drawSnow(ctx, scroll, time); break;
-    case 'city': drawCity(ctx, scroll); break;
-    case 'roofs': drawRoofs(ctx, scroll, time); break;
-    case 'space': drawSpace(ctx, scroll, time); break;
-  }
-
-  ctx.fillStyle = biome.ground;
-  ctx.fillRect(-20, groundY, W + 40, H - groundY + 20);
+  ctx.fillRect(-20, -20, W + 40, BACK_WALL + 20);
+  for (const w of WALL) drawWallDecor(ctx, biome, w.x, BACK_WALL + 2, w.s, w.k);
   ctx.fillStyle = biome.groundDark;
-  ctx.fillRect(-20, groundY, W + 40, 6);
-  // полосы на земле едут вместе с отрядом — так видно движение
-  for (let i = 0; i < 20; i++) {
-    const x = wrap(i * 28, scroll, 20 * 28);
-    ctx.fillRect(x, groundY + 22 + (i % 2) * 14, 14, 4);
-  }
+  ctx.fillRect(-20, BACK_WALL, W + 40, 4);
+
+  // мягкая виньетка по краям арены
+  const v = ctx.createRadialGradient(W / 2, H / 2 + 20, H * 0.45, W / 2, H / 2 + 20, H * 0.95);
+  v.addColorStop(0, 'rgba(0,0,0,0)');
+  v.addColorStop(1, 'rgba(0,0,0,0.18)');
+  ctx.fillStyle = v;
+  ctx.fillRect(0, 0, W, H);
 }
 
-function hills(ctx, color, offset, baseY, amp, period) {
-  const { width: W, groundY } = WORLD;
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(-20, groundY);
-  for (let x = -20; x <= W + 20; x += 10) {
-    ctx.lineTo(x, baseY - Math.sin((x + offset) / period) * amp - Math.sin((x + offset) / (period * 0.37)) * amp * 0.3);
-  }
-  ctx.lineTo(W + 20, groundY);
-  ctx.fill();
-}
-
-function drawClouds(ctx, scroll, time) {
-  ctx.fillStyle = 'rgba(255,255,255,0.85)';
-  for (const c of CLOUDS) cloud(ctx, wrap(c.x, scroll * 0.1 + time * 6, WORLD.width + 160), c.y, c.s);
-}
-
-function drawForest(ctx, scroll, time) {
-  const { width: W, groundY } = WORLD;
-  ctx.fillStyle = '#fff3a0';
-  circle(ctx, W - 70, 56, 24);
-  drawClouds(ctx, scroll, time);
-  hills(ctx, '#9fd68a', scroll * 0.2, groundY - 70, 18, 70);
-  for (let i = 0; i < 9; i++) {
-    const x = wrap(i * 70 + 20, scroll * 0.45, 9 * 70);
-    ctx.fillStyle = '#6b4a2f';
-    ctx.fillRect(x - 3, groundY - 40, 6, 40);
-    ctx.fillStyle = i % 2 ? '#4f9d3f' : '#5aae48';
-    tri(ctx, x - 22, groundY - 30, x + 22, groundY - 30, x, groundY - 92);
-    tri(ctx, x - 18, groundY - 55, x + 18, groundY - 55, x, groundY - 108);
-  }
-}
-
-function drawDesert(ctx, scroll) {
-  const { width: W, groundY } = WORLD;
-  ctx.fillStyle = '#fff1b5';
-  circle(ctx, W - 80, 60, 30);
-  hills(ctx, '#f0c987', scroll * 0.15, groundY - 60, 22, 90);
-  hills(ctx, '#e8b56b', scroll * 0.35, groundY - 28, 14, 60);
-  for (let i = 0; i < 5; i++) {
-    const x = wrap(i * 130 + 50, scroll * 0.5, 5 * 130);
-    ctx.fillStyle = '#4f9a52';
-    roundRect(ctx, x - 6, groundY - 54, 12, 54, 6);
-    roundRect(ctx, x - 20, groundY - 40, 10, 22, 5);
-    roundRect(ctx, x - 20, groundY - 26, 18, 8, 4);
-    roundRect(ctx, x + 10, groundY - 46, 10, 20, 5);
-    roundRect(ctx, x + 2, groundY - 32, 18, 8, 4);
-  }
-}
-
-function drawSnow(ctx, scroll, time) {
-  const { width: W, height: H, groundY } = WORLD;
-  // горы
-  for (const [color, off, h, span] of [['#b5c8e0', 0.12, 150, 200], ['#d7e3f2', 0.3, 100, 140]]) {
-    for (let i = 0; i < 6; i++) {
-      const x = wrap(i * span, scroll * off, 6 * span);
-      ctx.fillStyle = color;
-      tri(ctx, x - span * 0.6, groundY, x + span * 0.6, groundY, x, groundY - h);
-      ctx.fillStyle = '#ffffff';
-      tri(ctx, x - span * 0.14, groundY - h * 0.77, x + span * 0.14, groundY - h * 0.77, x, groundY - h);
-    }
-  }
-  ctx.fillStyle = 'rgba(255,255,255,0.9)';
-  for (const f of SNOW) {
-    const x = wrap(f.x + Math.sin(time + f.v) * 10, scroll * 0.6, W + 120);
-    const y = (f.y + time * f.v) % H;
-    circle(ctx, x, y, f.s);
-  }
-}
-
-function drawCity(ctx, scroll) {
-  const { groundY } = WORLD;
-  const span = BUILDINGS.length * 42;
-  for (const b of BUILDINGS) {
-    const x = wrap(b.x, scroll * 0.35, span);
-    ctx.fillStyle = '#c47a5a';
-    ctx.fillRect(x, groundY - b.h, b.w, b.h);
-    ctx.fillStyle = 'rgba(255,240,200,0.6)';
-    for (let y = groundY - b.h + 10; y < groundY - 14; y += 18) {
-      for (let wx = 6; wx < b.w - 8; wx += 12) {
-        if ((wx * 7 + y * 3 + b.win * 100) % 5 > 1.5) ctx.fillRect(x + wx, y, 6, 8);
+function drawWallDecor(ctx, biome, x, base, s, k) {
+  switch (biome.decor) {
+    case 'garden':
+      ctx.fillStyle = '#6b4a2f';
+      ctx.fillRect(x - 2 * s, base - 14 * s, 4 * s, 14 * s);
+      ctx.fillStyle = k > 0.5 ? '#4f9d3f' : '#5aae48';
+      tri(ctx, x - 14 * s, base - 8 * s, x + 14 * s, base - 8 * s, x, base - 38 * s);
+      break;
+    case 'desert':
+      ctx.fillStyle = '#e8b56b';
+      ctx.beginPath();
+      ctx.ellipse(x, base, 26 * s, 12 * s, 0, Math.PI, TAU);
+      ctx.fill();
+      if (k > 0.6) {
+        ctx.fillStyle = '#4f9a52';
+        roundRect(ctx, x - 3 * s, base - 26 * s, 6 * s, 26 * s, 3 * s);
+        roundRect(ctx, x - 10 * s, base - 18 * s, 6 * s, 10 * s, 3 * s);
       }
-    }
+      break;
+    case 'snow':
+      ctx.fillStyle = '#d7e3f2';
+      tri(ctx, x - 22 * s, base, x + 22 * s, base, x, base - 34 * s);
+      ctx.fillStyle = '#ffffff';
+      tri(ctx, x - 7 * s, base - 23 * s, x + 7 * s, base - 23 * s, x, base - 34 * s);
+      break;
+    case 'city':
+      ctx.fillStyle = k > 0.5 ? '#c47a5a' : '#b0694b';
+      ctx.fillRect(x - 16 * s, base - 34 * s, 32 * s, 34 * s);
+      ctx.fillStyle = 'rgba(255,240,200,0.6)';
+      for (let i = 0; i < 3; i++) ctx.fillRect(x - 12 * s + i * 9 * s, base - 28 * s, 5 * s, 6 * s);
+      break;
+    case 'roofs':
+      ctx.fillStyle = '#2a1f3d';
+      tri(ctx, x - 20 * s, base, x + 20 * s, base, x, base - 22 * s);
+      if (k > 0.5) ctx.fillRect(x + 6 * s, base - 30 * s, 6 * s, 16 * s);
+      break;
+    case 'space':
+      ctx.fillStyle = '#4a4d66';
+      ctx.beginPath();
+      ctx.ellipse(x, base, 18 * s, 6 * s, 0, Math.PI, TAU);
+      ctx.fill();
+      break;
   }
 }
 
-function drawRoofs(ctx, scroll, time) {
-  const { width: W, groundY } = WORLD;
-  for (const s of STARS) {
-    ctx.fillStyle = `rgba(255,255,255,${0.5 + Math.sin(time * 2 + s.t) * 0.4})`;
-    circle(ctx, s.x, s.y, s.r);
-  }
-  ctx.fillStyle = 'rgba(253,246,195,0.15)';
-  circle(ctx, W - 80, 70, 42);
-  ctx.fillStyle = '#fdf6c3';
-  circle(ctx, W - 80, 70, 28);
-  ctx.fillStyle = 'rgba(200,190,140,0.5)';
-  circle(ctx, W - 88, 62, 6);
-  circle(ctx, W - 72, 80, 4);
-  ctx.fillStyle = '#2a1f3d';
-  for (let i = 0; i < 8; i++) {
-    const x = wrap(i * 90, scroll * 0.4, 8 * 90);
-    tri(ctx, x, groundY, x + 90, groundY, x + 45, groundY - 60);
-    ctx.fillRect(x + 56, groundY - 70, 12, 40);
-  }
-}
-
-function drawSpace(ctx, scroll, time) {
-  const { width: W } = WORLD;
-  for (const s of STARS) {
-    ctx.fillStyle = `rgba(255,255,255,${0.6 + Math.sin(time * 3 + s.t) * 0.4})`;
-    circle(ctx, wrap(s.x, scroll * 0.05, W + 120), s.y, s.r);
-  }
-  ctx.fillStyle = '#ff9f68';
-  circle(ctx, W - 90, 90, 36);
-  ctx.strokeStyle = 'rgba(255,220,180,0.7)';
-  ctx.lineWidth = 4;
+function drawTargetMarker(ctx, t, time) {
+  const r = 9 + Math.sin(time * 8) * 1.5;
+  ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+  ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.ellipse(W - 90, 90, 58, 12, -0.3, 0, TAU);
+  ctx.ellipse(t.x, t.y, r, r * 0.5, 0, 0, TAU);
   ctx.stroke();
-  ctx.fillStyle = '#8ecae6';
-  circle(ctx, 80, 60, 12);
-  for (let i = 0; i < 6; i++) {
-    const x = wrap(i * 110, scroll * 0.5, 6 * 110);
-    ctx.fillStyle = '#4a4d66';
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  circle(ctx, t.x, t.y + 1, 3);
+  for (const [dx, dy] of [[-4, -4], [-1.5, -6], [1.5, -6], [4, -4]]) circle(ctx, t.x + dx, t.y + dy, 1.4);
+}
+
+// ---------- Добыча на земле ----------
+function drawPickups(ctx, pickups, time) {
+  for (const p of pickups) {
+    if (p.kind === 'coin') {
+      const spin = Math.abs(Math.cos(time * 6 + p.x));
+      ctx.fillStyle = 'rgba(0,0,0,0.18)';
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y + 2, 4, 1.6, 0, 0, TAU);
+      ctx.fill();
+      ctx.fillStyle = '#ffd700';
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y - 3, 4 * Math.max(0.25, spin), 4, 0, 0, TAU);
+      ctx.fill();
+      ctx.fillStyle = '#b8860b';
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y - 3, 1.8 * Math.max(0.25, spin), 1.8, 0, 0, TAU);
+      ctx.fill();
+      continue;
+    }
+    // звёздный сундук: падает с неба, светится, мигает перед исчезновением
+    if (p.life < 3 && Math.sin(time * 18) > 0) continue;
+    const lift = p.drop * 120 + Math.abs(Math.sin(time * 4)) * 2;
+    ctx.fillStyle = 'rgba(255, 220, 120, 0.3)';
     ctx.beginPath();
-    ctx.ellipse(x, WORLD.groundY, 30, 10, 0, Math.PI, TAU);
+    ctx.ellipse(p.x, p.y, 20, 8, 0, 0, TAU);
     ctx.fill();
+    ctx.save();
+    ctx.translate(p.x, p.y - lift);
+    ctx.fillStyle = '#b5651d';
+    roundRect(ctx, -12, -16, 24, 15, 3);
+    ctx.fillStyle = '#d4892b';
+    roundRect(ctx, -13, -21, 26, 8, 4);
+    ctx.fillStyle = '#ffd43b';
+    ctx.fillRect(-13, -14, 26, 3);
+    ctx.fillRect(-2, -21, 4, 20);
+    star(ctx, 0, -9, 3.5);
+    ctx.restore();
+    ctx.fillStyle = `rgba(255, 243, 176, ${0.5 + Math.sin(time * 6) * 0.4})`;
+    star(ctx, p.x + 14, p.y - 26 - lift, 3);
+    // кольцо оставшегося времени
+    ctx.strokeStyle = 'rgba(255, 243, 176, 0.8)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y - 10 - lift, 18, -Math.PI / 2, -Math.PI / 2 + TAU * Math.max(0, p.life / p.lifeMax));
+    ctx.stroke();
+  }
+}
+
+// ---------- HUD на арене ----------
+function drawHud(ctx, battle) {
+  const { width: W, height: H } = WORLD;
+  const sq = battle.squad;
+  // здоровье отряда — внизу слева
+  bar(ctx, 10, H - 14, 120, 8, battle.hero.hp / sq.maxHp, '#4ade80', '#14532d');
+  ctx.font = '700 9px system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'bottom';
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillText('Отряд', 11, H - 15);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('Отряд', 10, H - 16);
+  if (!battle.manual && battle.state.autopilot && !battle.enemies.some((e) => e.isBoss)) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillText('🤖 автопилот — веди котиков мышкой или пальцем', W / 2 + 1, BACK_WALL + 7);
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.fillText('🤖 автопилот — веди котиков мышкой или пальцем', W / 2, BACK_WALL + 6);
+  }
+  // здоровье босса — вверху по центру
+  const boss = battle.enemies.find((e) => e.isBoss);
+  if (boss) {
+    const name = boss.heroine ? boss.heroine.name : 'Капитан';
+    const color = boss.heroine && boss.heroine.accent !== '#ffffff' ? boss.heroine.accent : '#a855f7';
+    bar(ctx, W / 2 - 90, BACK_WALL + 8, 180, 8, boss.hp / boss.maxHp, color, '#2a0a2a');
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.font = '800 10px system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillText(`👑 ${name}${boss.shield > 0 ? ' · щит' : ''}${boss.enraged ? ' · ярость' : ''}`, W / 2 + 1, BACK_WALL + 7);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(`👑 ${name}${boss.shield > 0 ? ' · щит' : ''}${boss.enraged ? ' · ярость' : ''}`, W / 2, BACK_WALL + 6);
   }
 }
 
@@ -281,16 +325,13 @@ export function drawGun(ctx, family, accent, time = 0) {
 }
 
 // ---------- Отряд ----------
-function drawSquad(ctx, battle, time) {
-  const squad = battle.squad;
-  for (let i = SQUAD.length - 1; i >= 0; i--) {
-    const cat = squad.cats[i];
-    if (!cat) continue;
-    drawCat(ctx, SQUAD[i], CATS[i], cat.gun, battle.cats[i], battle, time + i * 0.7, battle.state.catSkins[i]);
-  }
-  const front = squad.cats.findIndex(Boolean);
-  const x = SQUAD[Math.max(0, front)].x;
-  bar(ctx, x - 30, WORLD.groundY + 12, 60, 7, battle.hero.hp / squad.maxHp, '#4ade80', '#14532d');
+function drawArenaCat(ctx, battle, i, cat, time) {
+  const c = battle.cats[i];
+  const invuln = battle.dash.invulnerable > 0;
+  if (invuln) ctx.globalAlpha = 0.55 + Math.sin(time * 40) * 0.25;
+  drawCat(ctx, { x: c.x, y: 0, base: c.y, scale: ARENA.catScale, facing: c.facing }, CATS[i], cat?.gun ?? null,
+    { ...c, walking: battle.moving }, battle, time + i * 0.7, battle.state.catSkins[i]);
+  ctx.globalAlpha = 1;
 }
 
 // Котик для витрины гардероба и портретов диалогов: без боя, с выбранным скином.
@@ -299,13 +340,13 @@ export function drawCatPreview(ctx, catIndex, skin, w, h, time = 1, gun = null) 
   const scale = h / 82;
   const fake = { walking: false, buffs: { rage: 0, volley: 0 }, hero: { hurt: 0 }, freeze: 0 };
   ctx.save();
-  drawCat(ctx, { x: w * 0.42 / scale, y: 0, scale: 1, base: (h - 6) / scale }, CATS[catIndex], gun,
+  drawCat(ctx, { x: w * 0.42 / scale, y: 0, scale: 1, base: (h - 6) / scale, facing: 1 }, CATS[catIndex], gun,
     { aim: 0, recoil: 0, happy: 0 }, fake, time, skin, scale);
   ctx.restore();
 }
 
 function drawCat(ctx, pos, def, gun, cs, battle, time, skin = null, outerScale = 1) {
-  const walking = battle.walking;
+  const walking = cs.walking ?? false;
   const bob = walking ? Math.abs(Math.sin(time * 9)) * -3 : Math.sin(time * 4) * 1.5;
   const rage = battle.buffs.rage > 0;
   const fur = rage ? '#ff7b54' : def.fur;
@@ -313,8 +354,12 @@ function drawCat(ctx, pos, def, gun, cs, battle, time, skin = null, outerScale =
 
   ctx.save();
   if (outerScale !== 1) ctx.scale(outerScale, outerScale);
-  ctx.translate(pos.x, (pos.base ?? WORLD.groundY) + pos.y);
+  ctx.translate(pos.x, pos.base + pos.y);
   ctx.scale(pos.scale, pos.scale);
+  // котик нарисован лицом вправо; смотрит влево — отражаем, а угол прицела зеркалим
+  const facing = pos.facing ?? 1;
+  if (facing < 0) ctx.scale(-1, 1);
+  const aim = facing < 0 ? Math.PI - cs.aim : cs.aim;
 
   ctx.fillStyle = 'rgba(0,0,0,0.2)';
   ctx.beginPath();
@@ -409,10 +454,6 @@ function drawCat(ctx, pos, def, gun, cs, battle, time, skin = null, outerScale =
     tri(ctx, hx - 16, hy - 12, hx - 25, hy - 16 + Math.sin(time * 6) * 2, hx - 23, hy - 6);
   }
   drawSkinHead(ctx, skin, hx, hy, time);
-  if (cs.happy > 0) {
-    ctx.fillStyle = '#ff6b9d';
-    heart(ctx, hx + 20, hy - 22 + Math.sin(time * 5) * 2, 5);
-  }
   if (battle.freeze > 0) {
     ctx.fillStyle = 'rgba(200, 235, 255, 0.55)';
     roundRect(ctx, -22, -64, 50, 66, 10);
@@ -425,7 +466,7 @@ function drawCat(ctx, pos, def, gun, cs, battle, time, skin = null, outerScale =
   }
   ctx.save();
   ctx.translate(30, -32 - bob);
-  ctx.rotate(Math.max(-0.6, Math.min(0.4, cs.aim)));
+  ctx.rotate(Math.max(-1.3, Math.min(1.3, Math.atan2(Math.sin(aim), Math.cos(aim)))));
   ctx.translate(-cs.recoil * 4, 0);
   const len = drawGun(ctx, gun.family.key, gun.rarity.color, time);
   ctx.fillStyle = fur;
@@ -676,21 +717,22 @@ function drawSkinHead(ctx, skin, hx, hy, time) {
 function drawGirlEnemy(ctx, e, time, battle) {
   const look = lookFor(e, battle.state.stage);
   ctx.save();
-  ctx.translate(e.x - e.lunge * 8, e.y);
-  drawGirl(ctx, look, { H: e.height, phase: e.phase, lunge: e.lunge, walking: e.x > battle.stopX(e) + 0.5, flash: e.flash, time, enraged: e.enraged });
+  ctx.translate(e.x + e.lunge * 6 * e.facing, e.y);
+  if (e.facing > 0) ctx.scale(-1, 1); // героиня нарисована лицом влево
+  drawGirl(ctx, look, { H: e.height, phase: e.phase, lunge: e.lunge, walking: e.lunge <= 0, flash: e.flash, time, enraged: e.enraged });
   ctx.restore();
-  if (e.heroine?.key === 'emilia') drawPuck(ctx, e.x + e.size * 1.8, e.y - e.height * 0.9, 9, time);
+  if (e.heroine?.key === 'emilia') drawPuck(ctx, e.x - e.size * 1.6 * e.facing, e.y - e.height * 0.9, 7, time);
   if (e.shield > 0) {
     ctx.strokeStyle = `rgba(125, 211, 252, ${0.6 + Math.sin(time * 12) * 0.3})`;
     ctx.fillStyle = 'rgba(125, 211, 252, 0.15)';
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.ellipse(e.x, e.y - e.height * 0.5, e.size * 1.7, e.height * 0.62, 0, 0, TAU);
+    ctx.ellipse(e.x, e.y - e.height * 0.5, e.height * 0.42, e.height * 0.62, 0, 0, TAU);
     ctx.fill();
     ctx.stroke();
   }
   if (!e.isBoss && e.hp < e.maxHp) {
-    bar(ctx, e.x - e.size, e.y - e.height - 8, e.size * 2, 4, e.hp / e.maxHp, '#ef4444', '#450a0a');
+    bar(ctx, e.x - 12, e.y - e.height - 6, 24, 3, e.hp / e.maxHp, '#ef4444', '#450a0a');
   }
 }
 
@@ -700,8 +742,9 @@ function drawOrbs(ctx, orbs, time) {
       // ветряное лезвие — зелёный полумесяц
       ctx.strokeStyle = 'rgba(150, 242, 215, 0.9)';
       ctx.lineWidth = 3;
+      const a = Math.atan2(o.vy, o.vx);
       ctx.beginPath();
-      ctx.arc(o.x + 6, o.y, 9, Math.PI * 0.6, Math.PI * 1.4);
+      ctx.arc(o.x - Math.cos(a) * 6, o.y - Math.sin(a) * 6, 9, a - 0.8, a + 0.8);
       ctx.stroke();
       continue;
     }
@@ -714,52 +757,6 @@ function drawOrbs(ctx, orbs, time) {
   }
 }
 
-// ---------- Звёздный сундук и комбо ----------
-function drawChest(ctx, c, time) {
-  const bob = Math.sin(time * 5) * 4;
-  // искрящийся след
-  for (let i = 1; i <= 5; i++) {
-    ctx.fillStyle = `rgba(255, 243, 176, ${0.5 - i * 0.08})`;
-    star(ctx, c.x + i * 12, c.y + bob + Math.sin(time * 8 + i) * 3, 5 - i * 0.6);
-  }
-  ctx.save();
-  ctx.translate(c.x, c.y + bob);
-  ctx.rotate(Math.sin(time * 3) * 0.1);
-  ctx.fillStyle = 'rgba(255, 220, 120, 0.35)';
-  circle(ctx, 0, 0, 22);
-  ctx.fillStyle = '#b5651d';
-  roundRect(ctx, -14, -8, 28, 18, 3);
-  ctx.fillStyle = '#d4892b';
-  roundRect(ctx, -15, -14, 30, 9, 4);
-  ctx.fillStyle = '#ffd43b';
-  ctx.fillRect(-15, -6, 30, 3);
-  ctx.fillRect(-2, -14, 4, 24);
-  star(ctx, 0, -1, 4);
-  ctx.restore();
-}
-
-function drawCombo(ctx, combo, time) {
-  const mult = 1 + (combo.count - 1) * TAP.comboStep;
-  const pulse = 1 + Math.sin(time * 12) * 0.04;
-  ctx.save();
-  ctx.translate(WORLD.width / 2 + 40, WORLD.groundY + 34); // на земле — не мешает сундукам и именам героинь
-  ctx.scale(pulse, pulse);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.font = '900 22px system-ui, sans-serif';
-  ctx.lineWidth = 4;
-  ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-  const text = `🐾 Комбо ${combo.count} · ×${mult.toFixed(2)}`;
-  ctx.strokeText(text, 0, 0);
-  ctx.fillStyle = combo.count >= 20 ? '#ff6b6b' : combo.count >= 10 ? '#ffd166' : '#ffffff';
-  ctx.fillText(text, 0, 0);
-  ctx.fillStyle = 'rgba(255,255,255,0.25)';
-  ctx.fillRect(-60, 14, 120, 4);
-  ctx.fillStyle = '#ffd166';
-  ctx.fillRect(-60, 14, 120 * (combo.timer / TAP.comboWindow), 4);
-  ctx.restore();
-}
-
 // ---------- Враги ----------
 // Золотая мышь — единственный зверь среди врагов: котики не могут пройти мимо.
 function drawEnemy(ctx, e, time) {
@@ -767,7 +764,7 @@ function drawEnemy(ctx, e, time) {
   const step = Math.sin(e.phase);
   ctx.save();
   ctx.translate(e.x - e.lunge * 10, e.y);
-  if (e.fleeing) ctx.scale(-1, 1); // убегающая мышь разворачивается
+  if (e.facing > 0) ctx.scale(-1, 1); // мышь нарисована мордой влево
 
   ctx.fillStyle = 'rgba(0,0,0,0.2)';
   ctx.beginPath();
@@ -911,18 +908,8 @@ function drawParticles(ctx, particles) {
   for (const p of particles) {
     ctx.globalAlpha = Math.min(1, p.life * 2);
     ctx.fillStyle = p.color;
-    if (p.coin) {
-      circle(ctx, p.x, p.y, p.size);
-      ctx.fillStyle = '#b8860b';
-      circle(ctx, p.x, p.y, p.size * 0.45);
-    } else if (p.heart) {
-      heart(ctx, p.x, p.y, p.size);
-    } else if (p.star) {
+    if (p.star) {
       star(ctx, p.x, p.y, p.size);
-    } else if (p.paw) {
-      ctx.globalAlpha = Math.min(1, p.life * 2.5) * 0.85;
-      circle(ctx, p.x, p.y + 3, p.size * 0.55);
-      for (const [dx, dy] of [[-7, -6], [-2.5, -10], [2.5, -10], [7, -6]]) circle(ctx, p.x + dx, p.y + dy, p.size * 0.25);
     } else {
       ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
     }
@@ -972,24 +959,10 @@ function star(ctx, x, y, r) {
   ctx.fill();
 }
 
-function heart(ctx, x, y, s) {
-  ctx.beginPath();
-  ctx.moveTo(x, y + s * 0.9);
-  ctx.bezierCurveTo(x - s * 1.4, y - s * 0.1, x - s * 0.6, y - s * 1.1, x, y - s * 0.35);
-  ctx.bezierCurveTo(x + s * 0.6, y - s * 1.1, x + s * 1.4, y - s * 0.1, x, y + s * 0.9);
-  ctx.fill();
-}
-
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.roundRect(x, y, w, h, r);
   ctx.fill();
-}
-
-function cloud(ctx, x, y, s) {
-  circle(ctx, x, y, 14 * s);
-  circle(ctx, x + 16 * s, y - 6 * s, 18 * s);
-  circle(ctx, x + 34 * s, y, 14 * s);
 }
 
 function bar(ctx, x, y, w, h, frac, fg, bg) {

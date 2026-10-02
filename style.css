@@ -141,6 +141,30 @@ button {
 }
 .speed-btn.fast { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #2a1600; }
 
+.dash-btn {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: rgba(20, 14, 40, 0.6);
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  font-size: 24px;
+  overflow: hidden;
+  touch-action: manipulation;
+}
+.dash-btn::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: var(--cd, 0%);
+  background: rgba(0, 0, 0, 0.55);
+}
+.dash-btn.cooldown { opacity: 0.8; }
+#game { touch-action: none; cursor: crosshair; }
+.setting + .setting { margin-top: 8px; }
+
 /* ---------- Навыки ---------- */
 .skills {
   display: grid;

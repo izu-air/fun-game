@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   enemyHp, enemyGold, upgradeCost, bulkPurchase, heroStats, expectedDps, bonesForPrestige,
   formatNumber, formatDuration, isBossStage, pickEnemyType, biomeFor, isMaxed,
-  gunInfo, gunCost, buyTier, squadStats, squadDps, idleGoldPerSecond, poolAverage, WALK_TIME, bossDpsFactor, bossDamageFactor,
+  gunInfo, gunCost, buyTier, squadStats, squadDps, idleGoldPerSecond, poolAverage, TIME_PER_TARGET, bossDpsFactor, bossDamageFactor,
 } from '../src/formulas.js';
 import { HEROINES } from '../src/story.js';
 import { UPGRADES, BIOMES, MAX_GUN_TIER, CATS } from '../src/config.js';
@@ -92,7 +92,8 @@ test('рыцарши и волшебницы не появляются на пе
     assert.ok(t !== 'knight' && t !== 'mage', t);
   }
   const seen = new Set(Array.from({ length: 400 }, (_, i) => pickEnemyType(10, () => i / 400)));
-  for (const t of ['ninja', 'sword', 'knight', 'mage', 'tree', 'rock', 'crate']) assert.ok(seen.has(t), t);
+  for (const t of ['ninja', 'sword', 'knight', 'mage']) assert.ok(seen.has(t), t);
+  assert.ok(!seen.has('crate'), 'ящики появляются на арене отдельно, не в волне');
 });
 
 test('скины дают бонусы отряду, только пока котик в строю', () => {
@@ -168,13 +169,13 @@ test('косточки растут быстрее, чем степенная ф
   assert.ok(ratio(100) > 1.5, 'и на поздних этапах тоже');
 });
 
-test('оффлайн-доход не быстрее, чем отряд успевает дойти до целей', () => {
-  // даже бесконечно сильный отряд тратит время на ходьбу
+test('оффлайн-доход не быстрее, чем на арену приходят враги', () => {
+  // даже бесконечно сильный отряд ждёт, пока появится следующая воительница
   const strong = squadStats({ damage: 2000 }, 0, [30, 30, 30], 100);
   const gps = idleGoldPerSecond(11, strong);
   const perTarget = enemyGold(11) * poolAverage(11, 'gold') * strong.goldMult;
-  assert.ok(Math.abs(gps - perTarget / WALK_TIME) < 1e-6 * gps);
-  assert.ok(WALK_TIME > 1.5);
+  assert.ok(Math.abs(gps - perTarget / TIME_PER_TARGET) < 1e-6 * gps);
+  assert.ok(TIME_PER_TARGET >= 0.8);
 });
 
 test('способности героинь мешают отряду: снижают урон по ним или бьют сильнее', () => {

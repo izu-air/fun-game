@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { initialQuests, progressQuest, claimQuest, questTarget, isQuestDone, questText } from '../src/quests.js';
 import { createState, addGun, mergeGuns, openCase } from '../src/state.js';
-import { ACTIVE_QUESTS, QUEST_TYPES, SKINS } from '../src/config.js';
+import { ACTIVE_QUESTS, QUEST_TYPES, SKINS, STREAK_MAX } from '../src/config.js';
 
 const seq = (...values) => {
   let i = 0;
@@ -20,9 +20,9 @@ test('стартовые задания: три разных типа', () => {
 
 test('прогресс не превышает цель и засчитывается только своему типу', () => {
   const s = createState();
-  s.quests = [{ type: 'taps', target: 3, progress: 0 }, { type: 'kills', target: 5, progress: 0 }, { type: 'pets', target: 2, progress: 0 }];
-  progressQuest(s, 'taps', 10);
-  progressQuest(s, 'pets');
+  s.quests = [{ type: 'coins', target: 3, progress: 0 }, { type: 'kills', target: 5, progress: 0 }, { type: 'dashes', target: 2, progress: 0 }];
+  progressQuest(s, 'coins', 10);
+  progressQuest(s, 'dashes');
   assert.deepEqual(s.quests.map((q) => q.progress), [3, 0, 1]);
   assert.ok(isQuestDone(s.quests[0]));
   assert.match(questText(s.quests[1]), /5/);
@@ -30,7 +30,7 @@ test('прогресс не превышает цель и засчитывае�
 
 test('награда: ключи, золото, новое задание другого типа', () => {
   const s = createState();
-  s.quests = [{ type: 'bosses', target: 1, progress: 1 }, { type: 'kills', target: 5, progress: 0 }, { type: 'pets', target: 2, progress: 0 }];
+  s.quests = [{ type: 'bosses', target: 1, progress: 1 }, { type: 'kills', target: 5, progress: 0 }, { type: 'dashes', target: 2, progress: 0 }];
   const keys = s.keys;
   assert.equal(claimQuest(s, 1, 100), null, 'невыполненное задание забрать нельзя');
   const r = claimQuest(s, 0, 100, seq(0));
@@ -62,7 +62,7 @@ test('костюм «Звезда сцены» за 8 заданий', () => {
 
 test('слияние и кейсы засчитываются в задания', () => {
   const s = createState();
-  s.quests = [{ type: 'merges', target: 5, progress: 0 }, { type: 'cases', target: 2, progress: 0 }, { type: 'pets', target: 2, progress: 0 }];
+  s.quests = [{ type: 'merges', target: 5, progress: 0 }, { type: 'cases', target: 2, progress: 0 }, { type: 'dashes', target: 2, progress: 0 }];
   addGun(s, 1);
   addGun(s, 1);
   mergeGuns(s, 0, 1);
@@ -86,11 +86,11 @@ test('задания выдаются по рекорду этапа', () => {
   }
 });
 
-test('задание на комбо засчитывает рекорд, а не сумму, и не требует больше предела', () => {
+test('задание на серию побед засчитывает рекорд, а не сумму, и не требует больше предела', () => {
   const s = createState();
-  s.quests = [{ type: 'combo', target: 15, progress: 0 }, { type: 'kills', target: 5, progress: 0 }, { type: 'pets', target: 2, progress: 0 }];
-  progressQuest(s, 'combo', 7);
-  progressQuest(s, 'combo', 4);
+  s.quests = [{ type: 'streak', target: 15, progress: 0 }, { type: 'kills', target: 5, progress: 0 }, { type: 'coins', target: 2, progress: 0 }];
+  progressQuest(s, 'streak', 7);
+  progressQuest(s, 'streak', 4);
   assert.equal(s.quests[0].progress, 7);
-  assert.ok(questTarget('combo', 1000) <= 30);
+  assert.ok(questTarget('streak', 1000) <= STREAK_MAX);
 });

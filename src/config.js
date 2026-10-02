@@ -3,7 +3,7 @@
 export const SAVE_KEY = 'meowGun.save.v1';
 export const SAVE_VERSION = 3;
 
-export const ENEMIES_PER_STAGE = 10;
+export const ENEMIES_PER_STAGE = 12;
 export const BOSS_EVERY = 5;
 export const BOSS_TIME_LIMIT = 30; // секунд
 export const CHAPTER_BOSS_TIME_LIMIT = 45; // героиня главы сильнее и со способностями — даём больше времени
@@ -24,10 +24,33 @@ export const BOSS_ABILITIES = {
   witch:   { shield: { every: 7, duration: 2 }, summon: { every: 9, count: 2 }, drain: { every: 8, squadPct: 0.05, healPct: 0.03 } },
 };
 export const ABILITY_FIRST = { heal: 3, freeze: 3, shield: 3, summon: 4, volley: 2, drain: 4 };
-export const MAX_ALIVE_ENEMIES = 6;
-export const SPAWN_INTERVAL = 0.8; // минимальное время на одну цель, даже при мгновенном убийстве
-export const MARCH_SPEED = 70; // скорость движения отряда, пикс/с
-export const SPAWN_GAP = [110, 170]; // расстояние между целями на пути, пикс
+export const MAX_ALIVE_ENEMIES = 9;
+export const SPAWN_INTERVAL = 1.0; // среднее время между появлениями врагов на арене, с
+
+// ---------- Арена ----------
+// Бой идёт на арене с видом сверху: воительницы набегают со всех сторон, ведущий котик бежит
+// за курсором (пальцем, WASD), остальные следуют за ним «змейкой», стреляют все сами.
+export const ARENA = {
+  width: 480,
+  height: 340,
+  margin: 16, // котики не выходят за край арены ближе этого
+  spawnEvery: [0.7, 1.3], // интервал появления врагов, с
+  catSpeed: 125, // быстрее любой воительницы — от врагов можно убежать
+  followGap: 24, // расстояние между котиками в «змейке»
+  catRadius: 11,
+  catScale: 0.64,
+  enemyScale: 0.68,
+  shootRange: 220,
+  coinsPerKill: 3, // золото с врага рассыпается монетами
+  coinMagnet: 46, // монеты притягиваются, когда котик ближе этого
+  coinAutoCollect: 7, // через столько секунд монета сама летит к отряду (для idle-игры)
+  crateEvery: [10, 18], // ящики с оружием появляются на арене
+  maxCrates: 2,
+  autopilotDelay: 2.5, // без управления дольше этого котики уворачиваются и собирают добычу сами
+  orbHitRadius: 14,
+};
+export const DASH = { distance: 95, duration: 0.18, invulnerable: 0.4, cooldown: 3.5 };
+export const STREAK_MAX = 50; // предел цели «серия побед без урона»
 
 export const OFFLINE_MAX_SECONDS = 8 * 60 * 60;
 export const OFFLINE_EFFICIENCY = 0.5;
@@ -43,7 +66,7 @@ export const ENEMY = {
   hpGrowth: 1.26,
   baseDamage: 3,
   damageGrowth: 1.11,
-  baseGold: 1.5,
+  baseGold: 0.5,
   goldGrowth: 1.15,
   attackInterval: 1.0,
   boss: { hpMult: 15, damageMult: 3, goldMult: 8 },
@@ -58,12 +81,11 @@ export const ENEMY_TYPES = {
   knight: { name: 'Рыцарша', girl: true, hp: 2.0, damage: 1.5, gold: 2.0, speed: 38, size: 19, height: 3.3, reach: 40, weight: 2, minStage: 4 },
   // Волшебница держит дистанцию и бросает магические сферы.
   mage:   { name: 'Волшебница', girl: true, hp: 0.9, damage: 0.8, gold: 1.4, speed: 45, size: 15, height: 3.4, weight: 2, minStage: 7,
-    ranged: { range: 190, interval: 2.2, speed: 170 } },
-  boss:   { name: 'Капитан', girl: true, hp: 1.0, damage: 1.0, gold: 1.0, speed: 22, size: 28, height: 3.3, reach: 56, weight: 0 },
+    ranged: { range: 150, interval: 2.2, speed: 150 } },
+  boss:   { name: 'Капитан', girl: true, hp: 1.0, damage: 1.0, gold: 1.0, speed: 42, size: 28, height: 3.3, reach: 56, weight: 0 },
   // Препятствия стоят на месте и не атакуют, но преграждают путь отряду.
-  tree:  { name: 'Дерево', hp: 1.6, damage: 0, gold: 1.3, speed: 0, size: 30, weight: 4, obstacle: true, height: 2.6 },
-  rock:  { name: 'Камень', hp: 2.4, damage: 0, gold: 1.8, speed: 0, size: 26, weight: 2, obstacle: true, minStage: 3, height: 1.35 },
-  crate: { name: 'Ящик с оружием', hp: 1.2, damage: 0, gold: 0.5, speed: 0, size: 22, weight: 1, obstacle: true, minStage: 2, dropsGun: true, height: 1.7 },
+  // Ящик с оружием стоит на арене (появляется по таймеру ARENA.crateEvery), его надо разбить.
+  crate: { name: 'Ящик с оружием', hp: 1.2, damage: 0, gold: 0.5, speed: 0, size: 22, weight: 0, obstacle: true, minStage: 2, dropsGun: true, height: 1.7 },
   // Редкая золотая мышь: убегает назад, если не успеть подстрелить.
   goldMouse: { name: 'Золотая мышь', hp: 1.5, damage: 0, gold: 12, speed: 90, size: 18, weight: 0.25, minStage: 4, runner: true, height: 1.2 },
 };
@@ -94,26 +116,12 @@ export const UPGRADES = {
   forge:      { name: 'Кузня',            icon: '⚒️', baseCost: 500, growth: 6, maxLevel: 12 },
 };
 
-// ---------- Взаимодействия ----------
-export const TAP = {
-  dpsShare: 0.12, // удар лапкой = 12% урона отряда в секунду (×комбо)
-  minShotShare: 0.5, // но не меньше половины выстрела стартового оружия
-  cooldown: 0.1, // не чаще 10 ударов в секунду
-  radius: 70, // насколько близко к врагу нужно нажать
-  comboWindow: 1.2, // удары чаще этого интервала (с) наращивают комбо
-  comboStep: 0.03, // +3% урона лапкой за каждый удар в серии
-  comboMax: 30, // предел серии: ×1.9
-};
-// Звёздный сундук пролетает по небу; поймай пальцем — награда.
-export const STAR_CHEST = { every: [80, 140], flightTime: 7, goldSeconds: 60, keyChance: 0.3, gunChance: 0.3 };
+// ---------- Добыча ----------
+// Звёздный сундук падает на арену; добеги до него, пока он не исчез.
+export const STAR_CHEST = { every: [35, 60], lifetime: 14, goldSeconds: 60, keyChance: 0.3, gunChance: 0.3 };
 // Упорство: каждый проигрыш боссу даёт +10% урона против него (до +50%), сбрасывается после победы.
 export const RESOLVE = { perFail: 0.1, maxStacks: 5 };
 export const AUTO_BOSS_DELAY = 30; // через сколько секунд фарма отряд сам снова идёт на босса
-export const PET = {
-  duration: 6, // сколько секунд котик доволен
-  cooldown: 10, // как часто одного котика можно гладить
-  fireRateMult: 1.25,
-};
 
 // ---------- Аниме-скины котиков ----------
 // Скин надевается на одного котика; бонус действует, пока этот котик в отряде с пушкой.
@@ -140,13 +148,13 @@ export const SKINS = {
 // minStage — задание выдаётся только после этого рекорда (золотые мыши с 4-го этапа, боссы с 5-го).
 export const QUEST_TYPES = {
   kills:     { base: 30, keys: 1, text: (n) => `Победи ${n} воительниц` },
-  taps:      { base: 40, keys: 1, text: (n) => `Нанеси ${n} ударов лапкой` },
-  obstacles: { base: 15, keys: 1, text: (n) => `Разрушь ${n} препятствий` },
+  coins:     { base: 60, keys: 1, text: (n) => `Собери ${n} монет` },
+  dashes:    { base: 8,  keys: 1, text: (n) => `Сделай ${n} рывков` },
   merges:    { base: 5,  keys: 1, text: (n) => `Слей ${n} пушек` },
-  pets:      { base: 5,  keys: 1, text: (n) => `Погладь котиков ${n} раз` },
-  combo:     { base: 15, keys: 1, text: (n) => `Набери комбо лапкой ×${n}`, record: true },
+  streak:    { base: 8,  keys: 1, text: (n) => `Победи ${n} воительниц подряд без урона`, record: true },
+  crates:    { base: 2,  keys: 1, text: (n) => `Разбей ${n} ящика с оружием`, minStage: 2 },
   cases:     { base: 2,  keys: 2, text: (n) => `Открой ${n} кейса`, minStage: 3 },
-  chests:    { base: 1,  keys: 2, text: (n) => `Поймай звёздный сундук: ${n}`, minStage: 3 },
+  chests:    { base: 1,  keys: 2, text: (n) => `Подбери звёздный сундук: ${n}`, minStage: 3 },
   bosses:    { base: 2,  keys: 2, text: (n) => `Победи ${n} боссов`, minStage: 5 },
   goldMice:  { base: 1,  keys: 2, text: (n) => `Поймай золотую мышь: ${n}`, minStage: 6 },
 };

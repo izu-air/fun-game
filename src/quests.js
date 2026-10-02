@@ -1,11 +1,11 @@
 // Задания: три активных одновременно, за выполнение — ключи и золото.
 // Чистые функции над состоянием — без DOM, тестируются в Node.
-import { QUEST_TYPES, ACTIVE_QUESTS, SKINS, TAP } from './config.js';
+import { QUEST_TYPES, ACTIVE_QUESTS, SKINS, STREAK_MAX } from './config.js';
 
 export function questTarget(type, done) {
   const target = Math.ceil(QUEST_TYPES[type].base * (1 + Math.floor(done / 6) * 0.5));
-  // рекордные задания (комбо) не должны требовать больше, чем вообще возможно
-  return QUEST_TYPES[type].record ? Math.min(target, TAP.comboMax) : target;
+  // рекордные задания (серия побед) не должны требовать больше разумного предела
+  return QUEST_TYPES[type].record ? Math.min(target, STREAK_MAX) : target;
 }
 
 export function newQuest(type, done) {
@@ -28,7 +28,7 @@ export const questText = (q) => QUEST_TYPES[q.type].text(q.target);
 export const isQuestDone = (q) => q.progress >= q.target;
 
 // Засчитать прогресс по всем активным заданиям этого типа.
-// У рекордных заданий (комбо) n — достигнутое значение, а не прибавка.
+// У рекордных заданий (серия побед) n — достигнутое значение, а не прибавка.
 export function progressQuest(state, type, n = 1) {
   const record = QUEST_TYPES[type]?.record;
   for (const q of state.quests) {

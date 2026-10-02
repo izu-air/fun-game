@@ -129,6 +129,10 @@ export function sfx(name, variant) {
     case 'story':
       [392, 523, 659].forEach((f, i) => tone({ type: 'triangle', from: f, dur: 0.25, vol: 0.15, delay: i * 0.12 }));
       break;
+    case 'dash':
+      noise({ dur: 0.15, vol: 0.18, filter: 3000 });
+      tone({ type: 'sine', from: 400, to: 900, dur: 0.12, vol: 0.12 });
+      break;
     case 'win':
       [523, 659, 784, 1047].forEach((f, i) => tone({ type: 'square', from: f, dur: 0.14, vol: 0.12, delay: i * 0.1 }));
       break;

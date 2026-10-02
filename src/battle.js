@@ -1,13 +1,13 @@
-// Боевая симуляция: отряд котиков идёт вперёд, сносит препятствия и сражается с воительницами Академии.
-// Не сохраняется — живёт только в сессии.
+// Боевая симуляция на арене (вид сверху). Воительницы Академии набегают со всех сторон,
+// ведущий котик бежит за указателем (мышь, палец, WASD), остальные следуют «змейкой» и стреляют сами.
+// Монеты и сундуки остаются на земле — их нужно подбирать. Не сохраняется — живёт только в сессии.
 import {
   ENEMIES_PER_STAGE, BOSS_TIME_LIMIT, CHAPTER_BOSS_TIME_LIMIT, MAX_ALIVE_ENEMIES, ENEMY, ENEMY_TYPES,
-  HERO, SKILLS, MARCH_SPEED, SPAWN_GAP, CRATE_GUN_CHANCE, KEYS, TAP, PET, BOSS_ABILITIES, ABILITY_FIRST,
-  STAR_CHEST, AUTO_BOSS_DELAY, MAX_GUN_TIER,
+  HERO, SKILLS, CRATE_GUN_CHANCE, KEYS, BOSS_ABILITIES, ABILITY_FIRST, STAR_CHEST, AUTO_BOSS_DELAY,
+  MAX_GUN_TIER, ARENA, DASH, CATS,
 } from './config.js';
 import {
-  isBossStage, enemyHp, enemyDamage, enemyGold, pickEnemyType, formatNumber, buyTier, squadDps,
-  idleGoldPerSecond,
+  isBossStage, enemyHp, enemyDamage, enemyGold, pickEnemyType, formatNumber, buyTier, idleGoldPerSecond,
 } from './formulas.js';
 import {
   statsOf, addGold, isSkillUnlocked, addGun, addKeys, allies, progressQuest, resolveMult, addResolve,
@@ -15,38 +15,40 @@ import {
 } from './state.js';
 import { heroineForStage, chapterForStage, CHAPTERS, ALLY_BOSS_WEAKEN, bookOf } from './story.js';
 
-export const WORLD = { width: 480, height: 340, groundY: 278 };
-// Позиции котиков в строю: первый слот впереди, остальные чуть дальше от зрителя.
-export const SQUAD = [
-  { x: 150, y: 0, scale: 1 },
-  { x: 98, y: -12, scale: 0.9 },
-  { x: 50, y: -24, scale: 0.8 },
-];
-export const FRONT_X = SQUAD[0].x + 26;
-const CAT_HEIGHT = 66; // для попадания пальцем по котику
-
+export const WORLD = { width: ARENA.width, height: ARENA.height };
+const CAT_BODY = 18; // высота центра котика над его «ногами» (с учётом масштаба)
 const BULLET_TURN_RATE = 9; // рад/с — пули доворачивают к цели, дробь сначала разлетается веером
+const rand = (a, b) => a + Math.random() * (b - a);
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
 export class Battle {
   constructor(state, events = {}) {
     this.state = state;
-    // { onStageStart, onStageFail, onBossKill, onGunDrop, onKey, onPet, onChest, onResolve, sfx }
+    // { onStageStart, onStageFail, onBossKill, onGunDrop, onKey, onChest, onResolve, sfx }
     this.events = events;
     this.time = 0;
-    this.scroll = 0;
-    this.walking = true;
     this.shake = 0;
-    this.freeze = 0; // отряд заморожен и не стреляет
-    this.tapCd = 0;
-    this.combo = { count: 0, timer: 0 }; // серия ударов лапкой
-    this.chest = null; // летящий звёздный сундук
-    this.chestCd = this.nextChestDelay();
+    this.freeze = 0; // отряд заморожен: не двигается и не стреляет
     this.farmTimer = 0; // сколько секунд отряд фармит после провала босса
     this.buffs = { volley: 0, rage: 0 };
     this.cooldowns = Object.fromEntries(Object.keys(SKILLS).map((k) => [k, 0]));
     this.squad = statsOf(state);
     this.hero = { hp: this.squad.maxHp, hurt: 0 };
-    this.cats = SQUAD.map(() => ({ fireCd: Math.random() * 0.3, recoil: 0, aim: 0, happy: 0, petCd: 0 }));
+    const cx = WORLD.width / 2;
+    const cy = WORLD.height / 2 + 30;
+    this.cats = CATS.map((_, i) => ({
+      x: cx - i * ARENA.followGap, y: cy, fireCd: Math.random() * 0.3, recoil: 0, aim: 0, facing: 1, step: 0,
+    }));
+    // путь ведущего, по которому идут остальные; сначала — прямая линия позади него
+    this.trail = Array.from({ length: 60 }, (_, i) => ({ x: cx - i * 2, y: cy }));
+    // управление: цель указателя, направление клавиш, время последнего ввода
+    this.input = { target: null, keys: { x: 0, y: 0 }, lastAt: -Infinity };
+    this.moving = false;
+    this.dash = { t: 0, cd: 0, invulnerable: 0, dx: 1, dy: 0 };
+    this.streak = 0; // побед подряд без урона
+    this.pickups = []; // монеты и звёздные сундуки на земле
+    this.chestCd = this.nextChestDelay();
+    this.crateCd = rand(...ARENA.crateEvery) / 2;
     this.startStage();
   }
 
@@ -62,15 +64,31 @@ export class Battle {
     return this.isBoss ? 1 : ENEMIES_PER_STAGE;
   }
 
+  // Индексы котиков в строю: только те, у кого есть пушка. Первый — ведущий.
+  // Рыжик остаётся на арене, даже если у него нет пушки (тогда он просто не стреляет).
+  get activeCats() {
+    const list = this.squad.cats.map((c, i) => (c ? i : -1)).filter((i) => i >= 0);
+    return list.length ? list : [0];
+  }
+
+  get leader() {
+    return this.cats[this.activeCats[0] ?? 0];
+  }
+
+  // Ручное управление было недавно — иначе включается автопилот.
+  get manual() {
+    return this.time - this.input.lastAt < ARENA.autopilotDelay;
+  }
+
   startStage() {
     this.enemies = [];
     this.bullets = [];
-    this.orbs = []; // магические сферы волшебниц
+    this.orbs = []; // магические сферы и ветряные лезвия
     this.particles = [];
     this.texts = [];
     this.spawned = 0;
     this.killed = 0;
-    this.nextSpawnIn = 0;
+    this.spawnCd = 0.3;
     this.freeze = 0;
     this.bossTimer = heroineForStage(this.state.stage) ? CHAPTER_BOSS_TIME_LIMIT : BOSS_TIME_LIMIT;
     this.stageClearDelay = 0;
@@ -84,6 +102,148 @@ export class Battle {
     this.hero.hp = Math.min(this.squad.maxHp, this.hero.hp + Math.max(0, this.squad.maxHp - before));
   }
 
+  // ---------- Управление ----------
+  setTarget(x, y) {
+    this.input.target = { x, y };
+    this.input.lastAt = this.time;
+  }
+
+  clearTarget() {
+    this.input.target = null;
+  }
+
+  setKeys(x, y) {
+    this.input.keys = { x, y };
+    if (x || y) this.input.lastAt = this.time;
+  }
+
+  // Рывок: короткий бросок с неуязвимостью. Возвращает true, если удался.
+  dashNow() {
+    const d = this.dash;
+    if (d.cd > 0 || this.freeze > 0) return false;
+    const dir = this.moveDir() ?? { x: this.leader.facing, y: 0 };
+    d.dx = dir.x;
+    d.dy = dir.y;
+    d.t = DASH.duration;
+    d.invulnerable = DASH.invulnerable;
+    d.cd = DASH.cooldown;
+    this.state.stats.dashes++;
+    progressQuest(this.state, 'dashes');
+    this.burst(this.leader.x, this.leader.y - CAT_BODY, '#e7f5ff', 10, 120);
+    this.events.sfx?.('dash');
+    return true;
+  }
+
+  // Направление движения ведущего (единичный вектор) или null — стоять.
+  moveDir() {
+    const k = this.input.keys;
+    if (k.x || k.y) return normalize(k.x, k.y);
+    const L = this.leader;
+    if (this.input.target && this.manual) {
+      const dx = this.input.target.x - L.x;
+      const dy = this.input.target.y - L.y;
+      return Math.hypot(dx, dy) > 6 ? normalize(dx, dy) : null;
+    }
+    if (!this.manual && this.state.autopilot) return this.autopilotDir();
+    return null;
+  }
+
+  // Автопилот: убегать от ближних врагов и сфер, идти к добыче, держаться ближе к центру.
+  autopilotDir() {
+    const L = this.leader;
+    let vx = 0;
+    let vy = 0;
+    for (const e of this.enemies) {
+      if (e.obstacle || e.runner) continue;
+      const d = Math.max(10, dist(e, L));
+      const danger = (ENEMY_TYPES[e.type].ranged ? 120 : 95) + (e.isBoss ? 40 : 0);
+      if (d < danger) {
+        const w = (danger - d) / danger;
+        vx += ((L.x - e.x) / d) * w * 2.2;
+        vy += ((L.y - e.y) / d) * w * 2.2;
+      }
+    }
+    for (const o of this.orbs) {
+      const d = Math.max(8, dist(o, { x: L.x, y: L.y - CAT_BODY }));
+      if (d < 70) {
+        // уходим поперёк траектории сферы
+        const sp = Math.hypot(o.vx, o.vy) || 1;
+        vx += (-o.vy / sp) * 1.5;
+        vy += (o.vx / sp) * 1.5;
+      }
+    }
+    const loot = this.nearestPickup(L, 220);
+    if (loot) {
+      const d = Math.max(1, dist(loot, L));
+      vx += ((loot.x - L.x) / d) * (loot.kind === 'chest' ? 1.6 : 0.9);
+      vy += ((loot.y - L.y) / d) * (loot.kind === 'chest' ? 1.6 : 0.9);
+    }
+    const cx = WORLD.width / 2 - L.x;
+    const cy = WORLD.height / 2 + 20 - L.y;
+    vx += cx / 260;
+    vy += cy / 200;
+    return Math.hypot(vx, vy) > 0.25 ? normalize(vx, vy) : null;
+  }
+
+  nearestPickup(from, maxDist) {
+    let best = null;
+    let bestD = maxDist;
+    for (const p of this.pickups) {
+      const d = dist(p, from);
+      if (d < bestD) {
+        bestD = d;
+        best = p;
+      }
+    }
+    return best;
+  }
+
+  updateMovement(dt) {
+    const L = this.leader;
+    const d = this.dash;
+    d.cd = Math.max(0, d.cd - dt);
+    d.invulnerable = Math.max(0, d.invulnerable - dt);
+    let vx = 0;
+    let vy = 0;
+    if (this.freeze <= 0) {
+      if (d.t > 0) {
+        d.t -= dt;
+        const sp = DASH.distance / DASH.duration;
+        vx = d.dx * sp;
+        vy = d.dy * sp;
+      } else {
+        const dir = this.moveDir();
+        if (dir) {
+          vx = dir.x * ARENA.catSpeed;
+          vy = dir.y * ARENA.catSpeed;
+        }
+      }
+    }
+    this.moving = vx !== 0 || vy !== 0;
+    const m = ARENA.margin;
+    L.x = clamp(L.x + vx * dt, m, WORLD.width - m);
+    L.y = clamp(L.y + vy * dt, m + 30, WORLD.height - 6);
+    if (vx) L.facing = Math.sign(vx);
+    if (this.moving) L.step += dt * 12;
+
+    // «Змейка»: точки пути ведущего; котики встают на них через равные промежутки.
+    const last = this.trail[0];
+    if (dist(last, L) > 2) {
+      this.trail.unshift({ x: L.x, y: L.y });
+      if (this.trail.length > 120) this.trail.pop();
+    }
+    const order = this.activeCats;
+    for (let k = 1; k < order.length; k++) {
+      const c = this.cats[order[k]];
+      const p = pointAlong(this.trail, ARENA.followGap * k) ?? this.trail.at(-1);
+      const before = c.x;
+      c.x += (p.x - c.x) * Math.min(1, dt * 10);
+      c.y += (p.y - c.y) * Math.min(1, dt * 10);
+      if (Math.abs(c.x - before) > 0.05) c.facing = Math.sign(c.x - before);
+      if (this.moving) c.step += dt * 12;
+    }
+  }
+
   // ---------- Навыки ----------
   canCast(key) {
     return isSkillUnlocked(this.state, key) && this.cooldowns[key] <= 0;
@@ -94,13 +254,14 @@ export class Battle {
     const skill = SKILLS[key];
     this.cooldowns[key] = skill.cooldown;
     if (skill.duration > 0) this.buffs[key] = skill.duration;
+    const L = this.leader;
     if (skill.healPct) {
       const heal = this.squad.maxHp * skill.healPct;
       this.hero.hp = Math.min(this.squad.maxHp, this.hero.hp + heal);
       this.freeze = 0; // мурчание заодно отогревает лапки
-      this.floatText(SQUAD[0].x, WORLD.groundY - 80, '+' + formatNumber(heal), '#4ade80', 20);
+      this.floatText(L.x, L.y - 50, '+' + formatNumber(heal), '#4ade80', 18);
     }
-    this.burst(SQUAD[1].x, WORLD.groundY - 30, '#ffd166', 18, 160);
+    this.burst(L.x, L.y - CAT_BODY, '#ffd166', 18, 160);
     this.events.sfx?.('skill');
     return true;
   }
@@ -116,150 +277,6 @@ export class Battle {
     this.startStage();
   }
 
-  // ---------- Звёздный сундук ----------
-  nextChestDelay() {
-    const [a, b] = STAR_CHEST.every;
-    return a + Math.random() * (b - a);
-  }
-
-  updateChest(dt) {
-    if (!this.chest) {
-      this.chestCd -= dt;
-      if (this.chestCd <= 0 && this.state.maxStage >= 3) {
-        this.chest = { x: WORLD.width + 30, y: 45 + Math.random() * 50, t: 0 };
-        this.events.sfx?.('key');
-      }
-      return;
-    }
-    const c = this.chest;
-    c.t += dt;
-    c.x -= ((WORLD.width + 60) / STAR_CHEST.flightTime) * dt;
-    if (c.x < -30) {
-      this.chest = null;
-      this.chestCd = this.nextChestDelay();
-    }
-  }
-
-  // Награда: пушка (если есть место), ключ или золото за минуту фарма.
-  catchChest() {
-    const c = this.chest;
-    this.chest = null;
-    this.chestCd = this.nextChestDelay();
-    const s = this.state;
-    s.stats.chests++;
-    progressQuest(s, 'chests');
-    this.sparkles(c.x, c.y, 14);
-    const roll = Math.random();
-    let reward;
-    if (roll < STAR_CHEST.gunChance && s.guns.includes(0)) {
-      const tier = Math.min(MAX_GUN_TIER, buyTier(s.levels.forge ?? 0) + 1);
-      addGun(s, tier);
-      reward = { kind: 'gun', tier };
-    } else if (roll < STAR_CHEST.gunChance + STAR_CHEST.keyChance) {
-      addKeys(s, 1);
-      reward = { kind: 'key', amount: 1 };
-    } else {
-      const gold = idleGoldPerSecond(Math.max(1, s.stage), this.squad) * STAR_CHEST.goldSeconds;
-      addGold(s, gold);
-      reward = { kind: 'gold', amount: gold };
-    }
-    this.floatText(c.x, c.y + 20, reward.kind === 'gold' ? `+${formatNumber(reward.amount)} 🪙`
-      : reward.kind === 'key' ? '+1 🔑' : '🔫 Пушка!', '#fff3b0', 18);
-    this.events.sfx?.('jackpot');
-    this.events.onChest?.(reward);
-    return 'chest';
-  }
-
-  // ---------- Взаимодействия ----------
-  // Нажатие по полю боя в мировых координатах: погладить котика или ударить врага лапкой.
-  tap(x, y) {
-    const cat = this.catAt(x, y);
-    if (cat >= 0) return this.pet(cat) ? 'pet' : 'busy';
-    if (this.chest && Math.hypot(this.chest.x - x, this.chest.y - y) < 30) return this.catchChest();
-    if (this.tapCd > 0) return null;
-    this.tapCd = TAP.cooldown;
-    this.paw(x, y);
-    if (this.popOrbAt(x, y)) {
-      this.events.sfx?.('tap');
-      return 'orb';
-    }
-    const enemy = this.enemyAt(x, y);
-    if (!enemy) return 'miss';
-    const c = this.combo;
-    c.count = c.timer > 0 ? Math.min(TAP.comboMax, c.count + 1) : 1;
-    c.timer = TAP.comboWindow;
-    const comboMult = 1 + (c.count - 1) * TAP.comboStep;
-    // база удара — доля урона отряда, но не меньше половины выстрела: в начале игры лапка тоже ощутима
-    const base = Math.max(this.squad.damage * TAP.minShotShare, squadDps(this.squad) * TAP.dpsShare);
-    const dmg = base * comboMult * resolveMult(this.state);
-    const s = this.state;
-    s.stats.taps++;
-    s.stats.bestCombo = Math.max(s.stats.bestCombo, c.count);
-    progressQuest(s, 'taps');
-    progressQuest(s, 'combo', c.count);
-    this.hit(enemy, dmg, false, this.squad, true);
-    this.events.sfx?.('tap');
-    return 'hit';
-  }
-
-  catAt(x, y) {
-    for (let i = 0; i < SQUAD.length; i++) {
-      if (!this.squad.cats[i]) continue;
-      const p = SQUAD[i];
-      const top = WORLD.groundY + p.y - CAT_HEIGHT * p.scale;
-      if (Math.abs(x - p.x) < 26 * p.scale && y > top && y < WORLD.groundY + p.y + 6) return i;
-    }
-    return -1;
-  }
-
-  enemyAt(x, y) {
-    let best = null;
-    let bestD = TAP.radius;
-    for (const e of this.enemies) {
-      if (e.hp <= 0 || e.x > WORLD.width) continue;
-      const d = Math.hypot(e.x - x, Math.max(0, Math.abs(this.aimY(e) - y) - e.height * 0.4));
-      if (d < bestD) {
-        bestD = d;
-        best = e;
-      }
-    }
-    return best;
-  }
-
-  // Довольный котик стреляет быстрее; гладить можно не чаще раза в PET.cooldown секунд.
-  pet(i) {
-    const c = this.cats[i];
-    if (c.petCd > 0) {
-      this.floatText(SQUAD[i].x, WORLD.groundY + SQUAD[i].y - 80, 'Мрр… хватит', '#e9d5ff', 12);
-      return false;
-    }
-    c.happy = PET.duration;
-    c.petCd = PET.cooldown;
-    this.state.stats.pets++;
-    progressQuest(this.state, 'pets');
-    for (let k = 0; k < 6; k++) {
-      this.particles.push({
-        x: SQUAD[i].x + (Math.random() - 0.5) * 30,
-        y: WORLD.groundY + SQUAD[i].y - 60,
-        vx: (Math.random() - 0.5) * 40,
-        vy: -60 - Math.random() * 50,
-        life: 1.2,
-        color: '#ff6b9d',
-        size: 7,
-        heart: true,
-        float: true,
-      });
-    }
-    this.floatText(SQUAD[i].x, WORLD.groundY + SQUAD[i].y - 86, 'Мур! ×1.25 ⚡', '#ff9ec7', 14);
-    this.events.sfx?.('purr');
-    this.events.onPet?.(i);
-    return true;
-  }
-
-  paw(x, y) {
-    this.particles.push({ x, y, vx: 0, vy: 0, life: 0.45, color: '#ffffff', size: 10, paw: true, float: true });
-  }
-
   // ---------- Основной цикл ----------
   update(dt) {
     this.time += dt;
@@ -268,81 +285,107 @@ export class Battle {
 
     for (const k of Object.keys(this.cooldowns)) this.cooldowns[k] = Math.max(0, this.cooldowns[k] - dt);
     for (const k of Object.keys(this.buffs)) this.buffs[k] = Math.max(0, this.buffs[k] - dt);
-    for (const c of this.cats) {
-      c.recoil = Math.max(0, c.recoil - dt * 8);
-      c.happy = Math.max(0, c.happy - dt);
-      c.petCd = Math.max(0, c.petCd - dt);
-    }
+    for (const c of this.cats) c.recoil = Math.max(0, c.recoil - dt * 8);
     this.freeze = Math.max(0, this.freeze - dt);
-    this.tapCd = Math.max(0, this.tapCd - dt);
-    this.combo.timer = Math.max(0, this.combo.timer - dt);
-    if (this.combo.timer === 0) this.combo.count = 0;
-    this.updateChest(dt);
+    if (this.state.autoSkills) this.autoCast(squad);
     if (!this.state.autoAdvance && this.stageClearDelay <= 0) {
       this.farmTimer += dt;
       if (this.state.autoBoss && this.farmTimer >= AUTO_BOSS_DELAY) this.challengeBoss();
     }
-    if (this.state.autoSkills) this.autoCast(squad);
 
     this.hero.hp = Math.min(squad.maxHp, this.hero.hp + squad.regen * dt);
     this.hero.hurt = Math.max(0, this.hero.hurt - dt * 4);
     this.shake = Math.max(0, this.shake - dt * 30);
 
-    this.walking = this.stageClearDelay <= 0 && !this.enemies.some((e) => e.x <= this.stopX(e) + 0.5);
-    const march = this.walking ? MARCH_SPEED * dt : 0;
-    this.scroll += march;
-
+    this.updateMovement(dt);
     if (this.stageClearDelay > 0) {
       this.stageClearDelay -= dt;
       if (this.stageClearDelay <= 0) this.advance();
     } else {
-      this.updateSpawning(march);
+      this.updateSpawning(dt);
       if (this.isBoss && this.enemies.some((e) => e.isBoss)) {
         this.bossTimer -= dt;
         if (this.bossTimer <= 0) return this.fail('Время вышло! Капитан отступила с поля боя');
       }
     }
-
+    this.updateArenaEvents(dt);
     if (this.freeze <= 0) this.updateShooting(dt, squad);
     this.updateBullets(dt, squad);
-    this.updateEnemies(dt, march);
+    this.updateEnemies(dt);
     this.updateOrbs(dt);
-    this.updateEffects(dt, march);
+    this.updatePickups(dt);
+    this.updateEffects(dt);
 
     if (this.hero.hp <= 0) this.fail('Отряд устал… Отступаем на этап назад 😿');
   }
 
   autoCast(squad) {
-    const hasTargets = this.enemies.length > 0;
+    const hasTargets = this.enemies.some((e) => !e.obstacle);
     if (hasTargets && this.canCast('volley')) this.cast('volley');
     if (hasTargets && this.canCast('rage')) this.cast('rage');
     if ((this.hero.hp < squad.maxHp * 0.5 || this.freeze > 0) && this.canCast('purr')) this.cast('purr');
   }
 
-  // Где цель останавливается перед отрядом.
-  stopX(e) {
-    const t = ENEMY_TYPES[e.type];
-    if (t.ranged) return FRONT_X + t.ranged.range;
-    if (t.reach) return FRONT_X + t.reach;
-    return FRONT_X + e.size * (e.obstacle ? 1.1 : 1.4);
-  }
-
-  // Высота точки прицеливания — середина силуэта.
+  // Точка прицеливания — середина силуэта.
   aimY(e) {
     return e.y - e.height * 0.5;
   }
 
-  // Новые цели появляются по мере продвижения отряда.
-  updateSpawning(march) {
+  // Случайная точка за краем арены: враги приходят со всех четырёх сторон.
+  edgePoint(pad = 20) {
+    const W = WORLD.width;
+    const H = WORLD.height;
+    switch (Math.floor(Math.random() * 4)) {
+      case 0: return { x: rand(0, W), y: 30 - pad };
+      case 1: return { x: rand(0, W), y: H + pad };
+      case 2: return { x: -pad, y: rand(40, H) };
+      default: return { x: W + pad, y: rand(40, H) };
+    }
+  }
+
+  updateSpawning(dt) {
     if (this.spawned >= this.stageTarget) return;
-    this.nextSpawnIn -= march;
-    if (this.nextSpawnIn > 0 || this.enemies.length >= MAX_ALIVE_ENEMIES) return;
-    this.nextSpawnIn = SPAWN_GAP[0] + Math.random() * (SPAWN_GAP[1] - SPAWN_GAP[0]);
-    this.spawnEnemy(this.isBoss ? 'boss' : pickEnemyType(this.state.stage));
+    this.spawnCd -= dt;
+    const alive = this.enemies.filter((e) => !e.obstacle && !e.minion).length;
+    if (this.spawnCd > 0 || alive >= MAX_ALIVE_ENEMIES) return;
+    this.spawnCd = rand(...ARENA.spawnEvery);
+    const type = this.isBoss ? 'boss' : pickEnemyType(this.state.stage);
+    this.spawnEnemy(type, this.isBoss ? { x: WORLD.width + 30, y: WORLD.height / 2 + 30 } : undefined);
     this.spawned++;
   }
 
-  spawnEnemy(type, x = WORLD.width + ENEMY_TYPES[type].size + 10) {
+  // Ящики с оружием и звёздные сундуки появляются по таймерам, независимо от волны.
+  updateArenaEvents(dt) {
+    this.crateCd -= dt;
+    const crates = this.enemies.filter((e) => e.obstacle).length;
+    if (this.crateCd <= 0 && crates < ARENA.maxCrates && this.state.maxStage >= ENEMY_TYPES.crate.minStage) {
+      this.crateCd = rand(...ARENA.crateEvery);
+      this.spawnEnemy('crate', this.freeSpot(60));
+    }
+    this.chestCd -= dt;
+    if (this.chestCd <= 0 && this.state.maxStage >= 3) {
+      this.chestCd = this.nextChestDelay();
+      const p = this.freeSpot(90);
+      this.pickups.push({ kind: 'chest', x: p.x, y: p.y, t: 0, life: STAR_CHEST.lifetime, lifeMax: STAR_CHEST.lifetime, drop: 1 });
+      this.floatText(p.x, p.y - 30, '⭐ Сундук!', '#fff3b0', 15);
+      this.events.sfx?.('key');
+    }
+  }
+
+  // Точка на арене подальше от котиков.
+  freeSpot(minDist) {
+    for (let i = 0; i < 20; i++) {
+      const p = { x: rand(40, WORLD.width - 40), y: rand(70, WORLD.height - 30) };
+      if (this.activeCats.every((k) => dist(this.cats[k], p) > minDist)) return p;
+    }
+    return { x: rand(40, WORLD.width - 40), y: rand(70, WORLD.height - 30) };
+  }
+
+  nextChestDelay() {
+    return rand(...STAR_CHEST.every);
+  }
+
+  spawnEnemy(type, at = this.edgePoint()) {
     const stage = this.state.stage;
     const t = ENEMY_TYPES[type];
     let hp = enemyHp(stage, type);
@@ -353,6 +396,17 @@ export class Battle {
       helpers = allies(this.state, bookOf(chapterForStage(stage)));
       hp *= 1 - ALLY_BOSS_WEAKEN * helpers.length;
     }
+    const scale = t.girl ? ARENA.enemyScale : 0.75;
+    const height = t.size * (t.height ?? 1.2) * scale;
+    let { x, y } = at;
+    let vx = 0;
+    if (t.runner) {
+      // золотая мышь пересекает арену от края до края
+      const left = Math.random() < 0.5;
+      x = left ? -20 : WORLD.width + 20;
+      y = rand(80, WORLD.height - 20);
+      vx = left ? 1 : -1;
+    }
     const e = {
       type,
       girl: !!t.girl,
@@ -360,17 +414,19 @@ export class Battle {
       heroine,
       obstacle: !!t.obstacle,
       runner: !!t.runner,
-      fleeing: false,
       x,
-      y: WORLD.groundY,
+      y,
+      vx,
       hp,
       maxHp: hp,
       damage: enemyDamage(stage, type),
       gold: enemyGold(stage, type),
       speed: t.speed * (0.9 + Math.random() * 0.2),
-      size: t.size,
-      height: t.size * (t.height ?? 1.2),
-      attackCd: 0.3,
+      size: t.size * scale,
+      height,
+      r: Math.max(8, t.size * scale * 0.7), // радиус «тела» для столкновений
+      facing: -1,
+      attackCd: 0.4,
       castCd: 1 + Math.random(),
       phase: Math.random() * Math.PI * 2,
       flash: 0,
@@ -381,44 +437,56 @@ export class Battle {
       enraged: false,
     };
     this.enemies.push(e);
-    if (type === 'goldMouse') this.floatText(WORLD.width - 60, WORLD.groundY - 60, 'Золотая мышь!', '#ffd700', 16);
+    if (type === 'goldMouse') this.floatText(WORLD.width / 2, 60, 'Золотая мышь! Лови!', '#ffd700', 16);
     if (heroine) {
-      this.floatText(WORLD.width / 2, 60, `${heroine.name} — ${heroine.title}`, heroine.accent, 18);
+      this.floatText(WORLD.width / 2, 56, `${heroine.name} — ${heroine.title}`, heroine.accent === '#ffffff' ? heroine.hair : heroine.accent, 17);
       if (helpers.length) {
-        this.floatText(WORLD.width / 2, 86, `На помощь пришли: ${helpers.map((h) => h.name).join(', ')}!`, '#ffd166', 13);
-        this.floatText(WORLD.width / 2, 106, `Сила: ${heroine.name} −${Math.round(ALLY_BOSS_WEAKEN * helpers.length * 100)}%`, '#ffd166', 13);
+        this.floatText(WORLD.width / 2, 80, `На помощь пришли: ${helpers.map((h) => h.name).join(', ')}!`, '#ffd166', 13);
+        this.floatText(WORLD.width / 2, 98, `Сила: ${heroine.name} −${Math.round(ALLY_BOSS_WEAKEN * helpers.length * 100)}%`, '#ffd166', 13);
       }
     }
     return e;
   }
 
+  // Ближайшая цель для котика в радиусе стрельбы: воительницы важнее ящиков.
+  targetFor(cat) {
+    let best = null;
+    let bestScore = ARENA.shootRange;
+    for (const e of this.enemies) {
+      if (e.hp <= 0 || !onArena(e)) continue;
+      const d = Math.hypot(e.x - cat.x, this.aimY(e) - (cat.y - CAT_BODY));
+      const score = e.obstacle ? d + 120 : d;
+      if (d < ARENA.shootRange && score < bestScore) {
+        bestScore = score;
+        best = e;
+      }
+    }
+    return best;
+  }
+
   updateShooting(dt, squad) {
-    const target = this.nearestEnemy();
     const volley = this.buffs.volley > 0 ? SKILLS.volley.fireRateMult : 1;
     const rage = (this.buffs.rage > 0 ? SKILLS.rage.damageMult : 1) * resolveMult(this.state);
     squad.cats.forEach((cat, i) => {
       const c = this.cats[i];
       c.fireCd -= dt;
       if (!cat) return;
-      const pos = SQUAD[i];
-      const gunX = pos.x + 34 * pos.scale;
-      const gunY = WORLD.groundY + pos.y - 34 * pos.scale;
-      if (!target) {
-        c.aim *= 0.9;
-        return;
-      }
+      const gunX = c.x + 12 * c.facing;
+      const gunY = c.y - CAT_BODY;
+      const target = this.targetFor(c);
+      if (!target) return;
       c.aim = Math.atan2(this.aimY(target) - gunY, target.x - gunX);
+      if (!this.moving || i !== this.activeCats[0]) c.facing = Math.cos(c.aim) < 0 ? -1 : 1;
       if (c.fireCd > 0) return;
-      const happy = c.happy > 0 ? PET.fireRateMult : 1;
-      c.fireCd = 1 / (cat.fireRate * volley * happy);
+      c.fireCd = 1 / (cat.fireRate * volley);
       c.recoil = 1;
       for (let p = 0; p < cat.pellets; p++) {
         const crit = Math.random() < cat.critChance;
         const spread = cat.pellets > 1 ? (p - (cat.pellets - 1) / 2) * 0.35 : 0;
         const angle = c.aim + spread;
         this.bullets.push({
-          x: gunX + Math.cos(angle) * 18,
-          y: gunY + Math.sin(angle) * 18,
+          x: gunX + Math.cos(angle) * 10,
+          y: gunY + Math.sin(angle) * 10,
           target,
           dmg: cat.damage * rage * (crit ? cat.critMult : 1),
           crit,
@@ -433,10 +501,16 @@ export class Battle {
     });
   }
 
-  nearestEnemy(exclude) {
+  nearestEnemy(from, exclude) {
     let best = null;
+    let bestD = Infinity;
     for (const e of this.enemies) {
-      if (e.hp > 0 && e.x < WORLD.width + 4 && !exclude?.has(e) && (!best || e.x < best.x)) best = e;
+      if (e.hp <= 0 || e.obstacle || !onArena(e) || exclude?.has(e)) continue;
+      const d = dist(e, from);
+      if (d < bestD) {
+        bestD = d;
+        best = e;
+      }
     }
     return best;
   }
@@ -444,7 +518,7 @@ export class Battle {
   updateBullets(dt, squad) {
     const speed = HERO.bulletSpeed * dt;
     for (const b of this.bullets) {
-      if (!b.target || b.target.hp <= 0 || !this.enemies.includes(b.target)) b.target = this.nearestEnemy(b.hitSet);
+      if (!b.target || b.target.hp <= 0 || !this.enemies.includes(b.target)) b.target = this.nearestEnemy(b, b.hitSet);
       if (b.target) {
         const tx = b.target.x;
         const ty = this.aimY(b.target);
@@ -453,7 +527,7 @@ export class Battle {
         diff = Math.atan2(Math.sin(diff), Math.cos(diff));
         const maxTurn = BULLET_TURN_RATE * dt;
         b.angle += Math.max(-maxTurn, Math.min(maxTurn, diff));
-        if (Math.hypot(tx - b.x, ty - b.y) <= speed + Math.max(b.target.size * 0.6, b.target.height * 0.35)) {
+        if (Math.hypot(tx - b.x, ty - b.y) <= speed + Math.max(b.target.r, b.target.height * 0.35)) {
           this.hit(b.target, b.dmg, b.crit, squad);
           if (b.pierce > 0) {
             b.pierce--;
@@ -466,73 +540,74 @@ export class Battle {
       }
       b.x += Math.cos(b.angle) * speed;
       b.y += Math.sin(b.angle) * speed;
-      if (b.x > WORLD.width + 40 || b.y < -40 || b.y > WORLD.height + 40) b.dead = true;
+      if (b.x < -40 || b.x > WORLD.width + 40 || b.y < -40 || b.y > WORLD.height + 40) b.dead = true;
     }
     this.bullets = this.bullets.filter((b) => !b.dead);
   }
 
-  // tap — удар лапкой: его не блокируют щит и уворот (палец игрока точнее пуль).
-  hit(enemy, dmg, crit, squad, tap = false) {
+  hit(enemy, dmg, crit, squad) {
     if (enemy.hp <= 0) return;
     const ability = enemy.heroine?.ability;
-    if (!tap && enemy.shield > 0) {
-      this.floatText(enemy.x, enemy.y - enemy.height - 8, 'Щит!', '#7dd3fc', 13);
+    if (enemy.shield > 0) {
+      this.floatText(enemy.x, enemy.y - enemy.height - 8, 'Щит!', '#7dd3fc', 12);
       return;
     }
     const evade = ability && (enemy.heroine.evadeChance ?? BOSS_ABILITIES[ability].evade);
-    if (!tap && evade && Math.random() < evade) {
-      this.floatText(enemy.x + 10, enemy.y - enemy.height - 8, 'Мимо!', '#e9d5ff', 13);
+    if (evade && Math.random() < evade) {
+      this.floatText(enemy.x + 10, enemy.y - enemy.height - 8, 'Мимо!', '#e9d5ff', 12);
       return;
     }
     enemy.hp -= dmg;
     enemy.flash = 1;
-    if (!enemy.obstacle && !enemy.isBoss) enemy.x += 3; // лёгкая отдача
     this.floatText(
-      enemy.x + (Math.random() - 0.5) * 16,
+      enemy.x + (Math.random() - 0.5) * 14,
       enemy.y - enemy.height - 6,
-      (tap ? '🐾 ' : '') + formatNumber(dmg) + (crit ? '!' : ''),
-      crit ? '#ff4d6d' : tap ? '#ffe066' : '#ffffff',
-      crit || tap ? 18 : 14,
+      formatNumber(dmg) + (crit ? '!' : ''),
+      crit ? '#ff4d6d' : '#ffffff',
+      crit ? 16 : 12,
     );
-    const chip = enemy.obstacle
-      ? (enemy.type === 'rock' ? '#9aa0a6' : enemy.type === 'crate' ? '#c8894a' : '#7a5230')
-      : crit ? '#ff4d6d' : enemy.girl ? '#ffd6e7' : '#ffd166';
-    this.burst(enemy.x - enemy.size * 0.5, this.aimY(enemy), chip, crit ? 8 : 4, 120);
-    if (crit) this.shake = Math.max(this.shake, 3);
+    const chip = enemy.obstacle ? '#c8894a' : crit ? '#ff4d6d' : enemy.girl ? '#ffd6e7' : '#ffd166';
+    this.burst(enemy.x, this.aimY(enemy), chip, crit ? 6 : 3, 100);
+    if (crit) this.shake = Math.max(this.shake, 2);
     if (enemy.hp <= 0) this.kill(enemy, squad);
   }
 
   kill(enemy, squad) {
-    const gold = enemy.gold * squad.goldMult;
-    addGold(this.state, gold);
     const s = this.state;
+    const gold = enemy.gold * squad.goldMult;
+    // золото рассыпается монетами — их нужно подобрать (или они сами прилетят через пару секунд)
+    const coins = enemy.isBoss || enemy.runner ? 12 : ARENA.coinsPerKill;
+    for (let i = 0; i < coins; i++) this.dropCoin(enemy.x, enemy.y - 6, gold / coins);
     if (enemy.obstacle) {
-      progressQuest(s, 'obstacles');
+      s.stats.crates++;
+      progressQuest(s, 'crates');
     } else {
       s.stats.kills++;
-      if (enemy.girl) progressQuest(s, 'kills');
+      if (enemy.girl) {
+        progressQuest(s, 'kills');
+        this.streak++;
+        s.stats.bestStreak = Math.max(s.stats.bestStreak, this.streak);
+        progressQuest(s, 'streak', this.streak);
+      }
     }
     if (enemy.runner) {
       s.stats.goldMice++;
       progressQuest(s, 'goldMice');
     }
-    if (!enemy.minion) this.killed++;
-    this.floatText(enemy.x, enemy.y - enemy.height - 24, '+' + formatNumber(gold) + ' 🪙', '#ffd700', enemy.isBoss || enemy.runner ? 24 : 16);
+    if (!enemy.minion && !enemy.obstacle) this.killed++;
     // воительницы не погибают, а исчезают в облачке звёздочек — возвращаются в Академию
-    const debris = enemy.obstacle ? (enemy.type === 'rock' ? '#8d939a' : enemy.type === 'crate' ? '#b5763b' : '#5b8f3a')
-      : enemy.girl ? (enemy.heroine?.accent ?? '#ffc9de') : '#bbbbbb';
-    this.burst(enemy.x, this.aimY(enemy), debris, enemy.isBoss ? 40 : 14, enemy.isBoss ? 260 : 170);
-    if (enemy.girl) this.sparkles(enemy.x, this.aimY(enemy), enemy.isBoss ? 16 : 6);
-    for (let i = 0; i < (enemy.isBoss || enemy.runner ? 12 : 3); i++) this.coin(enemy.x, this.aimY(enemy));
+    const debris = enemy.obstacle ? '#b5763b' : enemy.girl ? (enemy.heroine?.accent ?? '#ffc9de') : '#ffd34d';
+    this.burst(enemy.x, this.aimY(enemy), debris, enemy.isBoss ? 36 : 12, enemy.isBoss ? 220 : 140);
+    if (enemy.girl) this.sparkles(enemy.x, this.aimY(enemy), enemy.isBoss ? 16 : 5);
     this.events.sfx?.(enemy.obstacle ? 'break' : 'coin');
     if (ENEMY_TYPES[enemy.type].dropsGun && Math.random() < CRATE_GUN_CHANCE) this.dropGun(enemy);
-    if (enemy.isBoss) this.giveKeys(enemy, this.state.stage % 10 === 0 ? KEYS.bigBoss : KEYS.boss);
+    if (enemy.isBoss) this.giveKeys(enemy, s.stage % 10 === 0 ? KEYS.bigBoss : KEYS.boss);
     if (enemy.runner && Math.random() < KEYS.goldMouseChance) this.giveKeys(enemy, 1);
     if (enemy.isBoss) {
       clearResolve(s, s.stage);
       s.stats.bossKills++;
       progressQuest(s, 'bosses');
-      this.shake = 12;
+      this.shake = 10;
       this.events.onBossKill?.(s.stage, enemy.heroine);
     }
     this.removeEnemy(enemy);
@@ -541,110 +616,165 @@ export class Battle {
   dropGun(enemy) {
     const tier = buyTier(this.state.levels.forge ?? 0);
     const placed = addGun(this.state, tier) >= 0;
-    this.floatText(enemy.x, enemy.y - enemy.height - 40, placed ? '🔫 Пушка!' : 'Арсенал полон', placed ? '#7dd3fc' : '#fca5a5', 16);
+    this.floatText(enemy.x, enemy.y - 40, placed ? '🔫 Пушка!' : 'Арсенал полон', placed ? '#7dd3fc' : '#fca5a5', 15);
     this.events.onGunDrop?.(tier, placed);
   }
 
   giveKeys(enemy, n) {
     addKeys(this.state, n);
-    this.floatText(enemy.x, enemy.y - enemy.height - 50, `+${n} 🔑`, '#ffe066', 20);
+    this.floatText(enemy.x, enemy.y - enemy.height - 40, `+${n} 🔑`, '#ffe066', 18);
     this.events.onKey?.(n);
   }
 
   removeEnemy(enemy) {
     this.enemies = this.enemies.filter((e) => e !== enemy);
     if (this.killed >= this.stageTarget && this.stageClearDelay <= 0) {
-      this.stageClearDelay = enemy.isBoss ? 1.2 : 0.6;
+      this.stageClearDelay = enemy.isBoss ? 1.5 : 1.0;
     }
   }
 
-  updateEnemies(dt, march) {
-    const fleeX = WORLD.width * 0.62;
+  // Ближайший котик в строю — к нему бегут воительницы.
+  nearestCat(from) {
+    let best = this.leader;
+    let bestD = Infinity;
+    for (const i of this.activeCats) {
+      const d = dist(this.cats[i], from);
+      if (d < bestD) {
+        bestD = d;
+        best = this.cats[i];
+      }
+    }
+    return best;
+  }
+
+  updateEnemies(dt) {
     for (const e of [...this.enemies]) {
-      e.phase += dt * ((e.speed || MARCH_SPEED) / 8);
       e.flash = Math.max(0, e.flash - dt * 6);
       e.lunge = Math.max(0, e.lunge - dt * 4);
       e.shield = Math.max(0, e.shield - dt);
+      if (e.obstacle) continue;
+      e.phase += dt * (e.speed / 8);
       if (e.heroine) this.updateAbility(e, dt);
-      const stopX = this.stopX(e);
 
       if (e.runner) {
-        // Золотая мышь подбегает, разворачивается и удирает.
-        if (!e.fleeing && e.x <= fleeX) e.fleeing = true;
-        e.x += (e.fleeing ? e.speed * 1.6 : -e.speed) * dt - march;
-        if (e.fleeing && e.x > WORLD.width + 40) {
-          this.floatText(WORLD.width - 50, WORLD.groundY - 60, 'Убежала!', '#fca5a5', 14);
+        e.x += e.vx * e.speed * dt;
+        e.facing = e.vx;
+        if (e.x < -40 || e.x > WORLD.width + 40) {
+          this.floatText(WORLD.width / 2, 70, 'Золотая мышь убежала!', '#fca5a5', 13);
           this.killed++;
           this.removeEnemy(e);
         }
         continue;
       }
 
-      if (e.x > stopX) {
-        e.x = Math.max(stopX, e.x - e.speed * dt - march);
-        continue;
-      }
-      if (e.obstacle) continue;
-
-      const ranged = ENEMY_TYPES[e.type].ranged;
-      if (ranged) {
+      const cat = this.nearestCat(e);
+      const dx = cat.x - e.x;
+      const dy = cat.y - e.y;
+      const d = Math.hypot(dx, dy) || 1;
+      e.facing = dx < 0 ? -1 : 1;
+      const t = ENEMY_TYPES[e.type];
+      if (t.ranged) {
+        // волшебница держит дистанцию и бросает сферы туда, где котик сейчас
+        const want = t.ranged.range;
+        const dir = d > want ? 1 : d < want * 0.7 ? -0.8 : 0;
+        e.x += (dx / d) * e.speed * dir * dt;
+        e.y += (dy / d) * e.speed * dir * dt;
         e.castCd -= dt;
-        if (e.castCd <= 0) {
-          e.castCd = ranged.interval;
+        if (e.castCd <= 0 && d < want * 1.3 && onArena(e)) {
+          e.castCd = t.ranged.interval;
           e.lunge = 0.6;
-          this.orbs.push({ x: e.x - 14, y: this.aimY(e) - 6, speed: ranged.speed, damage: e.damage, life: 4 });
+          this.fireOrb(e, cat, t.ranged.speed, e.damage);
         }
-        continue;
+      } else {
+        const reach = ARENA.catRadius + e.r + (t.reach ?? 30) * 0.35;
+        if (d > reach) {
+          e.x += (dx / d) * e.speed * dt;
+          e.y += (dy / d) * e.speed * dt;
+        } else {
+          e.attackCd -= dt;
+          if (e.attackCd <= 0) {
+            const oni = e.enraged ? BOSS_ABILITIES.oni.oni : null;
+            e.attackCd = ENEMY.attackInterval / (oni?.attackMult ?? 1);
+            e.lunge = 1;
+            this.damageSquad(e.damage * (oni?.damageMult ?? 1), e.isBoss ? 6 : 2, cat);
+          }
+        }
       }
+    }
+    this.separateEnemies();
+  }
 
-      e.attackCd -= dt;
-      if (e.attackCd <= 0) {
-        const oni = e.enraged ? BOSS_ABILITIES.oni.oni : null;
-        e.attackCd = ENEMY.attackInterval / (oni?.attackMult ?? 1);
-        e.lunge = 1;
-        this.damageSquad(e.damage * (oni?.damageMult ?? 1), e.isBoss ? 8 : 3);
+  // Воительницы не стоят друг в друге: расталкиваем пары, которые слишком близко.
+  separateEnemies() {
+    const list = this.enemies;
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const a = list[i];
+        const b = list[j];
+        const min = a.r + b.r;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const d = Math.hypot(dx, dy);
+        if (d >= min || d === 0) continue;
+        const push = (min - d) / 2;
+        const ka = a.obstacle || a.isBoss ? 0 : b.obstacle || b.isBoss ? 2 : 1;
+        const kb = b.obstacle || b.isBoss ? 0 : a.obstacle || a.isBoss ? 2 : 1;
+        a.x -= (dx / d) * push * ka;
+        a.y -= (dy / d) * push * ka;
+        b.x += (dx / d) * push * kb;
+        b.y += (dy / d) * push * kb;
       }
     }
   }
 
-  damageSquad(damage, shake) {
-    this.hero.hp -= damage;
-    this.hero.hurt = 1;
-    this.shake = Math.max(this.shake, shake);
-    this.floatText(SQUAD[0].x, WORLD.groundY - 90, '-' + formatNumber(damage), '#ff6b6b', 16);
-    this.events.sfx?.('hurt');
+  fireOrb(e, cat, speed, damage, extra = {}) {
+    const sx = e.x - 8 * e.facing;
+    const sy = this.aimY(e) - 4;
+    const a = Math.atan2(cat.y - CAT_BODY - sy, cat.x - sx) + (extra.spread ?? 0);
+    this.orbs.push({ x: sx, y: sy, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, damage, life: 4, wind: !!extra.wind });
   }
 
-  // Магические сферы летят к отряду; их можно сбить ударом лапкой.
+  // Урон отряду. Во время рывка — неуязвимость; любой урон обрывает серию побед.
+  damageSquad(damage, shake, at = this.leader) {
+    if (this.dash.invulnerable > 0) {
+      this.floatText(at.x, at.y - 50, 'Уклон!', '#e7f5ff', 13);
+      return false;
+    }
+    this.hero.hp -= damage;
+    this.hero.hurt = 1;
+    this.streak = 0;
+    this.shake = Math.max(this.shake, shake);
+    this.floatText(at.x, at.y - 50, '-' + formatNumber(damage), '#ff6b6b', 14);
+    this.events.sfx?.('hurt');
+    return true;
+  }
+
+  // Сферы летят по прямой; попадают по любому котику на пути — от них можно увернуться.
   updateOrbs(dt) {
     for (const o of this.orbs) {
-      o.x -= o.speed * dt;
+      o.x += o.vx * dt;
+      o.y += o.vy * dt;
       o.life -= dt;
-      if (o.x <= FRONT_X - 10) {
-        this.damageSquad(o.damage, 3);
-        o.dead = true;
+      for (const i of this.activeCats) {
+        const c = this.cats[i];
+        if (Math.hypot(o.x - c.x, o.y - (c.y - CAT_BODY)) < ARENA.orbHitRadius) {
+          this.damageSquad(o.damage, 3, c);
+          o.dead = true;
+          break;
+        }
       }
+      if (o.x < -20 || o.x > WORLD.width + 20 || o.y < -20 || o.y > WORLD.height + 20) o.dead = true;
     }
     this.orbs = this.orbs.filter((o) => !o.dead && o.life > 0);
   }
 
-  // Сбить сферу пальцем (вызывается до удара по врагу).
-  popOrbAt(x, y) {
-    const o = this.orbs.find((orb) => Math.hypot(orb.x - x, orb.y - y) < 28);
-    if (!o) return false;
-    o.dead = true;
-    this.sparkles(o.x, o.y, 6);
-    this.floatText(o.x, o.y - 14, 'Сбито!', '#c4b5fd', 13);
-    return true;
-  }
-
   updateAbility(e, dt) {
-    if (e.x > WORLD.width) return; // способности — только когда героиня на экране
+    if (!onArena(e)) return; // способности — только когда героиня на арене
     const cfg = BOSS_ABILITIES[e.heroine.ability];
     if (cfg.oni && !e.enraged && e.hp < e.maxHp * cfg.oni.below) {
       e.enraged = true;
-      this.shake = 10;
-      this.floatText(e.x, e.y - e.height - 14, '👹 Ярость!', '#ff6b6b', 18);
+      this.shake = 8;
+      this.floatText(e.x, e.y - e.height - 14, '👹 Ярость!', '#ff6b6b', 16);
       this.burst(e.x, this.aimY(e), '#ff6b6b', 20, 160);
     }
     for (const kind of Object.keys(ABILITY_FIRST)) {
@@ -663,13 +793,13 @@ export class Battle {
       case 'heal': {
         const heal = e.maxHp * c.amount;
         e.hp = Math.min(e.maxHp, e.hp + heal);
-        this.floatText(e.x, top, '🌸 +' + formatNumber(heal), '#ff9ec7', 15);
+        this.floatText(e.x, top, '🌸 +' + formatNumber(heal), '#ff9ec7', 14);
         this.burst(e.x, this.aimY(e), '#ffc9de', 14, 120);
         break;
       }
       case 'freeze':
         this.freeze = c.duration;
-        this.floatText(SQUAD[1].x, WORLD.groundY - 100, '❄️ Лапы замёрзли!', '#a5d8ff', 15);
+        this.floatText(this.leader.x, this.leader.y - 60, '❄️ Лапы замёрзли!', '#a5d8ff', 14);
         break;
       case 'shield':
         e.shield = c.duration;
@@ -678,17 +808,17 @@ export class Battle {
         this.summon(e, c.count);
         break;
       case 'volley':
-        // веер ветряных лезвий — каждое можно сбить лапкой
+        // веер ветряных лезвий в сторону ведущего — уворачивайся
         for (let k = 0; k < c.count; k++) {
-          this.orbs.push({ x: e.x - 16, y: this.aimY(e) - 30 + k * 22, speed: 200 + k * 25, damage: e.damage * c.damage, life: 4, wind: true });
+          this.fireOrb(e, this.leader, 170 + k * 15, e.damage * c.damage, { wind: true, spread: (k - (c.count - 1) / 2) * 0.28 });
         }
-        this.floatText(e.x, top, '🌪 Ветер!', '#96f2d7', 15);
+        this.floatText(e.x, top, '🌪 Ветер!', '#96f2d7', 14);
         break;
       case 'drain': {
         const heal = e.maxHp * c.healPct;
         e.hp = Math.min(e.maxHp, e.hp + heal);
         this.damageSquad(this.squad.maxHp * c.squadPct, 4);
-        this.floatText(e.x, top, `✨ ${e.heroine.name} вытягивает силы`, e.heroine.accent, 13);
+        this.floatText(e.x, top, `✨ ${e.heroine.name} вытягивает силы`, e.heroine.accent === '#ffffff' ? e.heroine.hair : e.heroine.accent, 12);
         break;
       }
     }
@@ -696,14 +826,100 @@ export class Battle {
 
   summon(boss, count) {
     for (let k = 0; k < count; k++) {
-      const m = this.spawnEnemy('ninja', boss.x + 30 + k * 26);
+      const m = this.spawnEnemy('ninja', { x: boss.x + rand(-30, 30), y: boss.y + rand(-30, 30) });
       m.minion = true; // призванные ниндзя не считаются в прогресс этапа
     }
-    this.floatText(boss.x, boss.y - boss.height - 12, 'Ко мне, стража!', boss.heroine.accent, 14);
+    this.floatText(boss.x, boss.y - boss.height - 12, 'Ко мне, стража!', boss.heroine.accent === '#ffffff' ? boss.heroine.hair : boss.heroine.accent, 13);
+  }
+
+  // ---------- Добыча на земле ----------
+  dropCoin(x, y, value) {
+    const a = Math.random() * Math.PI * 2;
+    const v = rand(30, 90);
+    this.pickups.push({ kind: 'coin', x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, value, t: 0, flying: false });
+  }
+
+  updatePickups(dt) {
+    const order = this.activeCats;
+    for (const p of this.pickups) {
+      p.t += dt;
+      if (p.kind === 'chest') {
+        p.drop = Math.max(0, p.drop - dt * 2);
+        p.life -= dt;
+        if (order.some((i) => dist(this.cats[i], p) < 22)) this.collectChest(p);
+        continue;
+      }
+      // монета: отскакивает, потом лежит; притягивается к котику рядом или сама летит к отряду
+      p.vx *= 1 - Math.min(1, dt * 5);
+      p.vy *= 1 - Math.min(1, dt * 5);
+      p.x = clamp(p.x + p.vx * dt, 6, WORLD.width - 6);
+      p.y = clamp(p.y + p.vy * dt, 36, WORLD.height - 4);
+      let near = null;
+      let nearD = ARENA.coinMagnet;
+      for (const i of order) {
+        const d = dist(this.cats[i], p);
+        if (d < nearD) {
+          nearD = d;
+          near = this.cats[i];
+        }
+      }
+      if (!near && p.t > ARENA.coinAutoCollect) near = this.leader;
+      if (near) {
+        const d = Math.max(1, dist(near, p));
+        const sp = 260 + p.t * 40;
+        p.x += ((near.x - p.x) / d) * Math.min(d, sp * dt);
+        p.y += ((near.y - p.y) / d) * Math.min(d, sp * dt);
+        if (d < 10) this.collectCoin(p);
+      }
+    }
+    this.pickups = this.pickups.filter((p) => !p.taken && !(p.kind === 'chest' && p.life <= 0));
+  }
+
+  collectCoin(p) {
+    p.taken = true;
+    addGold(this.state, p.value);
+    this.state.stats.coins++;
+    progressQuest(this.state, 'coins');
+    this.events.sfx?.('coin');
+  }
+
+  // Награда сундука: пушка (если есть место), ключ или золото за минуту фарма.
+  collectChest(p) {
+    p.taken = true;
+    const s = this.state;
+    s.stats.chests++;
+    progressQuest(s, 'chests');
+    this.sparkles(p.x, p.y - 10, 14);
+    const roll = Math.random();
+    let reward;
+    if (roll < STAR_CHEST.gunChance && s.guns.includes(0)) {
+      const tier = Math.min(MAX_GUN_TIER, buyTier(s.levels.forge ?? 0) + 1);
+      addGun(s, tier);
+      reward = { kind: 'gun', tier };
+    } else if (roll < STAR_CHEST.gunChance + STAR_CHEST.keyChance) {
+      addKeys(s, 1);
+      reward = { kind: 'key', amount: 1 };
+    } else {
+      const gold = idleGoldPerSecond(Math.max(1, s.stage), this.squad) * STAR_CHEST.goldSeconds;
+      addGold(s, gold);
+      reward = { kind: 'gold', amount: gold };
+    }
+    this.floatText(p.x, p.y - 30, reward.kind === 'gold' ? `+${formatNumber(reward.amount)} 🪙`
+      : reward.kind === 'key' ? '+1 🔑' : '🔫 Пушка!', '#fff3b0', 16);
+    this.events.sfx?.('jackpot');
+    this.events.onChest?.(reward);
+    return reward;
+  }
+
+  // Монеты, оставшиеся на арене после этапа, не пропадают — собираем их сразу.
+  sweepCoins() {
+    for (const p of this.pickups) if (p.kind === 'coin' && !p.taken) this.collectCoin(p);
+    this.pickups = this.pickups.filter((p) => !p.taken);
   }
 
   advance() {
     const s = this.state;
+    this.sweepCoins();
     if (s.autoAdvance) {
       s.stage += 1;
       s.maxStage = Math.max(s.maxStage, s.stage);
@@ -717,67 +933,52 @@ export class Battle {
       const stacks = addResolve(s, s.stage);
       this.events.onResolve?.(stacks);
     }
+    this.sweepCoins();
     this.farmTimer = 0;
     s.stage = Math.max(1, s.stage - 1);
     s.autoAdvance = false;
     this.squad = statsOf(s);
     this.hero.hp = this.squad.maxHp;
+    this.streak = 0;
     this.events.onStageFail?.(message);
     this.startStage();
   }
 
   // ---------- Эффекты ----------
   floatText(x, y, text, color, size) {
-    if (this.texts.length > 60) this.texts.shift();
-    this.texts.push({ x, y, text, color, size, life: 1, vy: -40 });
+    if (this.texts.length > 50) this.texts.shift();
+    this.texts.push({ x, y, text, color, size, life: 1, vy: -36 });
   }
 
   burst(x, y, color, count, speed) {
     for (let i = 0; i < count; i++) {
       const a = Math.random() * Math.PI * 2;
       const v = speed * (0.3 + Math.random() * 0.7);
-      this.particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 40, life: 0.5 + Math.random() * 0.4, color, size: 2 + Math.random() * 3 });
+      this.particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0.4 + Math.random() * 0.3, color, size: 2 + Math.random() * 2.5 });
     }
   }
 
   sparkles(x, y, count) {
     for (let i = 0; i < count; i++) {
       this.particles.push({
-        x: x + (Math.random() - 0.5) * 30,
-        y: y + (Math.random() - 0.5) * 30,
-        vx: (Math.random() - 0.5) * 60,
-        vy: -40 - Math.random() * 60,
-        life: 0.8 + Math.random() * 0.4,
+        x: x + (Math.random() - 0.5) * 24,
+        y: y + (Math.random() - 0.5) * 24,
+        vx: (Math.random() - 0.5) * 50,
+        vy: -30 - Math.random() * 50,
+        life: 0.7 + Math.random() * 0.4,
         color: '#fff3b0',
-        size: 5,
+        size: 4,
         star: true,
-        float: true,
       });
     }
   }
 
-  coin(x, y) {
-    this.particles.push({
-      x, y,
-      vx: -60 - Math.random() * 120,
-      vy: -160 - Math.random() * 120,
-      life: 1.1,
-      color: '#ffd700',
-      size: 4,
-      coin: true,
-    });
-  }
-
-  updateEffects(dt, march) {
+  updateEffects(dt) {
     for (const p of this.particles) {
-      p.x += p.vx * dt - march;
+      p.x += p.vx * dt;
       p.y += p.vy * dt;
-      if (!p.float) p.vy += 500 * dt; // сердечки, звёздочки и следы лапок не падают
-      if (p.coin && p.y > WORLD.groundY) {
-        p.y = WORLD.groundY;
-        p.vy *= -0.4;
-        p.vx *= 0.6;
-      }
+      p.vx *= 1 - Math.min(1, dt * 3);
+      p.vy *= 1 - Math.min(1, dt * 3);
       p.life -= dt;
     }
     this.particles = this.particles.filter((p) => p.life > 0);
@@ -799,3 +1000,28 @@ export class Battle {
   }
 }
 
+// ---------- помощники ----------
+function clamp(v, a, b) {
+  return Math.max(a, Math.min(b, v));
+}
+
+function normalize(x, y) {
+  const l = Math.hypot(x, y) || 1;
+  return { x: x / l, y: y / l };
+}
+
+const onArena = (e) => e.x > -4 && e.x < WORLD.width + 4 && e.y > 20 && e.y < WORLD.height + 10;
+
+// Точка на ломаной (путь ведущего) на расстоянии len от начала.
+function pointAlong(path, len) {
+  let left = len;
+  for (let i = 0; i + 1 < path.length; i++) {
+    const seg = dist(path[i], path[i + 1]);
+    if (seg >= left) {
+      const k = left / seg;
+      return { x: path[i].x + (path[i + 1].x - path[i].x) * k, y: path[i].y + (path[i + 1].y - path[i].y) * k };
+    }
+    left -= seg;
+  }
+  return null;
+}

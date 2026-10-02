@@ -23,6 +23,7 @@
       <button id="boss-btn" class="boss-btn" hidden>⚔️ В бой с боссом!</button>
       <button id="sound-btn" class="sound-btn" aria-label="Звук">🔊</button>
       <button id="speed-btn" class="speed-btn" aria-label="Скорость игры">×1</button>
+      <button id="dash-btn" class="dash-btn" aria-label="Рывок" title="Рывок: пробел, правая кнопка мыши или двойное касание">💨</button>
     </section>
 
     <section class="skills" id="skills"></section>
@@ -101,6 +102,9 @@
       <label class="setting"><input type="checkbox" id="auto-boss">
         <span><b>Авто-вызов босса</b><small>После провала отряд фармит 30 секунд и сам идёт на босса снова.
           Каждый провал даёт упорство: +10% урона против этого босса (до +50%).</small></span></label>
+      <label class="setting"><input type="checkbox" id="autopilot">
+        <span><b>Автопилот</b><small>Если не управлять отрядом 2.5 секунды, котики сами уворачиваются от врагов
+          и сфер и собирают монеты и сундуки.</small></span></label>
       <h3 class="section-title">Статистика</h3>
       <dl class="stats" id="stats-list"></dl>
       <button id="reset-btn" class="danger">Сбросить прогресс</button>

@@ -4,7 +4,7 @@
 //   --prestige — перерождаться, когда прогресс встал (15 минут без нового рекорда).
 import {
   squadDps, enemyHp, enemyDamage, enemyGold, upgradeCost, isMaxed, isBossStage, bonesForPrestige,
-  gunInfo, bossDpsFactor, bossDamageFactor, poolAverage, WALK_TIME,
+  gunInfo, bossDpsFactor, bossDamageFactor, poolAverage, TIME_PER_TARGET,
 } from '../src/formulas.js';
 import { heroineForStage, chapterForStage } from '../src/story.js';
 import {
@@ -12,7 +12,7 @@ import {
   chooseChapter, prestige,
 } from '../src/state.js';
 import {
-  BONES, UPGRADES, ENEMIES_PER_STAGE, SPAWN_INTERVAL, BOSS_TIME_LIMIT, CHAPTER_BOSS_TIME_LIMIT, ENEMY_TYPES, MARCH_SPEED,
+  BONES, UPGRADES, ENEMIES_PER_STAGE, BOSS_TIME_LIMIT, CHAPTER_BOSS_TIME_LIMIT, ENEMY_TYPES, ARENA,
   AUTO_BOSS_DELAY,
 } from '../src/config.js';
 
@@ -22,7 +22,8 @@ if (process.env.BONE_GROWTH) BONES.growth = Number(process.env.BONE_GROWTH); // 
 const STUCK_MINUTES = 15;
 let lastRecordAt = 0;
 const prestiges = [];
-const BOSS_WALK_TIME = 300 / (ENEMY_TYPES.boss.speed + MARCH_SPEED);
+// босс выходит из-за края арены и бежит к отряду через полкарты
+const BOSS_WALK_TIME = (ARENA.width / 2) / ENEMY_TYPES.boss.speed;
 const walls = []; // этапы, где отряд проваливал босса
 
 const state = createState();
@@ -115,12 +116,12 @@ while (time < maxMinutes * 60) {
       if (!walls.includes(s)) walls.push(s);
       addResolve(state, s);
       const farm = s - 1;
-      const perKill = Math.max(enemyHp(farm) * poolAverage(farm, 'hp') / dps, WALK_TIME, SPAWN_INTERVAL);
+      const perKill = Math.max(enemyHp(farm) * poolAverage(farm, 'hp') / dps, TIME_PER_TARGET);
       time += AUTO_BOSS_DELAY + bossFight(st).limit;
       state.gold += (AUTO_BOSS_DELAY / perKill) * enemyGold(farm) * poolAverage(farm, 'gold') * st.goldMult;
     }
   } else {
-    const perKill = Math.max(enemyHp(s) * poolAverage(s, 'hp') / dps, WALK_TIME, SPAWN_INTERVAL);
+    const perKill = Math.max(enemyHp(s) * poolAverage(s, 'hp') / dps, TIME_PER_TARGET);
     time += perKill * ENEMIES_PER_STAGE;
     state.gold += ENEMIES_PER_STAGE * enemyGold(s) * poolAverage(s, 'gold') * st.goldMult;
     state.stage++;

@@ -40,8 +40,9 @@ export function createState() {
     quests: initialQuests(),
     questsDone: 0,
     autoBoss: true, // после провала отряд сам снова идёт на босса через AUTO_BOSS_DELAY секунд
+    autopilot: true, // без управления котики сами уворачиваются и собирают добычу
     resolve: { stage: 0, stacks: 0 }, // упорство против босса этого этапа
-    stats: { kills: 0, bossKills: 0, prestiges: 0, totalGold: 0, playTime: 0, merges: 0, bestGun: 1, casesOpened: 0, jackpots: 0, taps: 0, pets: 0, goldMice: 0, chests: 0, bestCombo: 0 },
+    stats: { kills: 0, bossKills: 0, prestiges: 0, totalGold: 0, playTime: 0, merges: 0, bestGun: 1, casesOpened: 0, jackpots: 0, taps: 0, pets: 0, goldMice: 0, chests: 0, bestCombo: 0, coins: 0, dashes: 0, bestStreak: 0, crates: 0 },
     lastSeen: Date.now(),
   };
 }
@@ -323,6 +324,7 @@ export function prestige(state) {
     quests: state.quests,
     questsDone: state.questsDone,
     autoBoss: state.autoBoss,
+    autopilot: state.autopilot,
     stats: { ...state.stats, prestiges: state.stats.prestiges + 1 },
   });
   return gained;
@@ -362,6 +364,7 @@ export function deserialize(json) {
     autoAdvance: data.autoAdvance !== false,
     autoSkills: data.autoSkills === true,
     autoBoss: data.autoBoss !== false,
+    autopilot: data.autopilot !== false,
     sound: data.sound !== false,
     gunsBought: Math.floor(num(data.gunsBought, 0)),
     keys: Math.floor(num(data.keys, KEYS.start)),

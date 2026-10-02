@@ -1,7 +1,7 @@
 // Точка входа: игровой цикл, связка боя с интерфейсом, сохранения.
 import {
   UPGRADES, SKILLS, PRESTIGE_MIN_STAGE, CATS, MAX_GUN_TIER, CASES, SKINS, QUEST_TYPES, QUEST_GOLD_SECONDS,
-  CHAPTER_BOSS_TIME_LIMIT, BOSS_TIME_LIMIT, RESOLVE, AUTO_BOSS_DELAY,
+  CHAPTER_BOSS_TIME_LIMIT, BOSS_TIME_LIMIT, RESOLVE, AUTO_BOSS_DELAY, DASH, ENEMIES_PER_STAGE,
 } from './config.js';
 import {
   formatNumber, formatDuration, isMaxed, isBossStage, biomeFor, bonesForPrestige,
@@ -102,9 +102,6 @@ function newBattle() {
     onBossKill(stage, heroine) {
       sfx('win');
       if (heroine) storyOnHeroineDefeated(stage);
-    },
-    onPet(i) {
-      if (state.stats.pets === 1) toast(`💗 ${CATS[i].name} мурчит и стреляет быстрее!`);
     },
     onChest(reward) {
       const text = reward.kind === 'gun' ? `пушка ${gunInfo(reward.tier).name}`
@@ -444,15 +441,96 @@ function renderWardrobe() {
   }
 }
 
-// ---------- Касания по полю боя ----------
-function setupFieldTaps() {
+// ---------- Управление отрядом ----------
+// Мышь: котик бежит за курсором над ареной, правая кнопка — рывок.
+// Палец: котик бежит туда, где палец; двойное касание — рывок. Клавиатура: WASD/стрелки, пробел — рывок.
+function setupFieldControls() {
+  const toWorld = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * WORLD.width,
+      y: ((e.clientY - rect.top) / rect.height) * WORLD.height,
+    };
+  };
+  let lastTap = 0;
   canvas.addEventListener('pointerdown', (e) => {
     if (isDialogueOpen()) return;
-    const rect = canvas.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * WORLD.width;
-    const y = ((e.clientY - rect.top) / rect.height) * WORLD.height;
-    battle.tap(x, y);
+    if (e.button === 2) return; // правая кнопка — рывок, см. contextmenu
+    canvas.setPointerCapture?.(e.pointerId);
+    const p = toWorld(e);
+    battle.setTarget(p.x, p.y);
+    if (e.pointerType !== 'mouse') {
+      if (performance.now() - lastTap < 300) tryDash();
+      lastTap = performance.now();
+    }
   });
+  canvas.addEventListener('pointermove', (e) => {
+    if (isDialogueOpen()) return;
+    // мышь управляет просто наведением, палец — только пока касается экрана
+    if (e.pointerType === 'mouse' || e.buttons) {
+      const p = toWorld(e);
+      battle.setTarget(p.x, p.y);
+    }
+  });
+  canvas.addEventListener('pointerleave', (e) => {
+    if (e.pointerType === 'mouse') battle.clearTarget();
+  });
+  canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    tryDash();
+  });
+  const held = new Set();
+  const DIRS = {
+    KeyW: [0, -1], ArrowUp: [0, -1], KeyS: [0, 1], ArrowDown: [0, 1],
+    KeyA: [-1, 0], ArrowLeft: [-1, 0], KeyD: [1, 0], ArrowRight: [1, 0],
+  };
+  const applyKeys = () => {
+    let x = 0;
+    let y = 0;
+    for (const code of held) {
+      x += DIRS[code][0];
+      y += DIRS[code][1];
+    }
+    battle.setKeys(x, y);
+  };
+  document.addEventListener('keydown', (e) => {
+    if (isDialogueOpen() || e.target.closest?.('input, textarea')) return;
+    if (DIRS[e.code]) {
+      held.add(e.code);
+      applyKeys();
+      e.preventDefault();
+    } else if (e.code === 'Space' || e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+      if (e.target.closest?.('button')) return;
+      tryDash();
+      e.preventDefault();
+    }
+  });
+  document.addEventListener('keyup', (e) => {
+    if (held.delete(e.code)) applyKeys();
+  });
+  window.addEventListener('blur', () => {
+    held.clear();
+    applyKeys();
+  });
+  $('dash-btn').onclick = tryDash;
+  const autopilot = $('autopilot');
+  autopilot.checked = state.autopilot;
+  autopilot.onchange = () => {
+    state.autopilot = autopilot.checked;
+    toast(state.autopilot ? '🤖 Без управления котики сами уворачиваются и собирают добычу' : 'Автопилот выключен: без управления котики стоят на месте');
+  };
+}
+
+function tryDash() {
+  if (isDialogueOpen()) return;
+  if (!battle.dashNow() && battle.dash.cd > 0) toast(`💨 Рывок будет готов через ${Math.ceil(battle.dash.cd)} с`);
+}
+
+function updateDashBtn() {
+  const btn = $('dash-btn');
+  const cd = battle.dash.cd;
+  btn.classList.toggle('cooldown', cd > 0);
+  btn.style.setProperty('--cd', `${(cd / DASH.cooldown) * 100}%`);
 }
 
 // ---------- Арсенал ----------
@@ -989,13 +1067,14 @@ function updateStats(stats) {
     ['Слияний', formatNumber(state.stats.merges)],
     ['Открыто кейсов', formatNumber(state.stats.casesOpened)],
     ['Суперпризов', formatNumber(state.stats.jackpots)],
-    ['Ударов лапкой', formatNumber(state.stats.taps)],
-    ['Котиков поглажено', formatNumber(state.stats.pets)],
+    ['Собрано монет', formatNumber(state.stats.coins)],
+    ['Рывков', formatNumber(state.stats.dashes)],
+    ['Разбито ящиков', formatNumber(state.stats.crates)],
     ['Выполнено заданий', formatNumber(state.questsDone)],
     ['Пощажено героинь', `${sparedCount(state)} из ${CHAPTERS.length}`],
     ['Концовок в альбоме', `${state.story.endings.length} из ${BOOKS.length * 3}`],
     ['Звёздных сундуков', formatNumber(state.stats.chests)],
-    ['Лучшее комбо лапкой', `×${state.stats.bestCombo}`],
+    ['Лучшая серия без урона', formatNumber(state.stats.bestStreak)],
     ['Костюмов', `${state.skins.length} из ${Object.keys(SKINS).length}`],
     ['Текущий этап', state.stage],
     ['Рекорд этапа', state.maxStage],
@@ -1022,13 +1101,14 @@ function updateUI(force = false) {
   $('stage-progress').parentElement.classList.toggle('boss', boss);
   $('stage-progress-text').textContent = boss
     ? `⏱ ${Math.max(0, battle.bossTimer).toFixed(1)} с`
-    : `${battle.killed} / 10`;
+    : `${battle.killed} / ${ENEMIES_PER_STAGE}`;
   $('boss-btn').hidden = state.autoAdvance;
   if (!state.autoAdvance) {
     const left = Math.ceil(AUTO_BOSS_DELAY - battle.farmTimer);
     $('boss-btn').textContent = state.autoBoss ? `⚔️ В бой с боссом! (сам через ${left} с)` : '⚔️ В бой с боссом!';
   }
   updateSkills();
+  updateDashBtn();
 
   // Тяжёлые панели обновляем реже.
   if (!force && uiTimer > 0) return;
@@ -1093,7 +1173,7 @@ $('boss-btn').onclick = () => battle.challengeBoss();
 setSoundEnabled(state.sound);
 updateSoundBtn();
 initDialogue({ catSkin: (i) => state.catSkins[i], sfx });
-setupFieldTaps();
+setupFieldControls();
 setupArsenal();
 buildCases();
 setupRoulette();

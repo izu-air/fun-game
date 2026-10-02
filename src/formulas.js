@@ -2,7 +2,7 @@
 import {
   ENEMY, ENEMY_TYPES, HERO, UPGRADES, BOSS_EVERY, BONE_BONUS,
   PRESTIGE_MIN_STAGE, BIOMES, STAGES_PER_BIOME, GUN_FAMILIES, RARITIES, MAX_GUN_TIER,
-  GUN_TIER_POWER, GUN_COST, CATS, CASES, SKINS, BOSS_ABILITIES, MARCH_SPEED, SPAWN_GAP, SPAWN_INTERVAL, BONES,
+  GUN_TIER_POWER, GUN_COST, CATS, CASES, SKINS, BOSS_ABILITIES, ARENA, BONES,
 } from './config.js';
 
 export const isBossStage = (stage) => stage % BOSS_EVERY === 0;
@@ -202,8 +202,9 @@ export function bonesForPrestige(maxStage) {
 }
 
 // ---------- Оффлайн-доход ----------
-// Сколько секунд отряд в среднем идёт до следующей цели.
-export const WALK_TIME = (SPAWN_GAP[0] + SPAWN_GAP[1]) / 2 / MARCH_SPEED;
+// Сколько секунд в среднем проходит до появления следующей воительницы на арене:
+// даже бесконечно сильный отряд не фармит быстрее.
+export const TIME_PER_TARGET = (ARENA.spawnEvery[0] + ARENA.spawnEvery[1]) / 2;
 
 // Средний множитель поля (hp / gold) по всем целям, которые встречаются на этапе.
 export function poolAverage(stage, field) {
@@ -213,11 +214,11 @@ export function poolAverage(stage, field) {
 }
 
 // Приблизительное золото в секунду при фарме обычного этапа (для оффлайн-дохода и наград).
-// Время на цель — не меньше времени ходьбы до неё: так в начале игры доход не завышается.
+// Время на цель — не меньше интервала появления врагов: так в начале игры доход не завышается.
 export function idleGoldPerSecond(stage, squad) {
   const farmStage = isBossStage(stage) ? Math.max(1, stage - 1) : stage;
   const dps = Math.max(squadDps(squad), 1e-9);
-  const perTarget = Math.max((enemyHp(farmStage) * poolAverage(farmStage, 'hp')) / dps, WALK_TIME, SPAWN_INTERVAL);
+  const perTarget = Math.max((enemyHp(farmStage) * poolAverage(farmStage, 'hp')) / dps, TIME_PER_TARGET);
   return (enemyGold(farmStage) * poolAverage(farmStage, 'gold') * squad.goldMult) / perTarget;
 }
 
