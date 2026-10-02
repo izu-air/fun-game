@@ -1,7 +1,7 @@
 // Точка входа: игровой цикл, связка боя с интерфейсом, сохранения.
 import {
   UPGRADES, SKILLS, PRESTIGE_MIN_STAGE, CATS, MAX_GUN_TIER, CASES, SKINS, QUEST_TYPES, QUEST_GOLD_SECONDS,
-  SPAWN_INTERVAL, CHAPTER_BOSS_TIME_LIMIT, BOSS_TIME_LIMIT,
+  CHAPTER_BOSS_TIME_LIMIT, BOSS_TIME_LIMIT, RESOLVE, AUTO_BOSS_DELAY,
 } from './config.js';
 import {
   formatNumber, formatDuration, isMaxed, isBossStage, biomeFor, bonesForPrestige,
@@ -11,14 +11,15 @@ import {
   createState, statsOf, buyUpgrade, nextCost, isSkillUnlocked, canPrestige, prestige,
   applyOffline, saveToStorage, loadFromStorage, clearStorage, buyGun, nextGunCost, mergeGuns,
   mergeAll, equipGun, equipBest, isSlotUnlocked, casePrice, caseBlocker, openCase, pityLeft,
-  cycleSpeed, availableSpeeds, hasSeen, markSeen, chooseChapter, sparedCount, allies, equipSkin,
+  cycleSpeed, availableSpeeds, hasSeen, markSeen, chooseChapter, sparedCount, allies, equipSkin, unlockEnding,
+  isBookFinished, resolveMult,
 } from './state.js';
 import { Battle, WORLD } from './battle.js';
 import { render, drawGun, GUN_EXTENTS, drawCatPreview } from './render.js';
-import { drawGirlPortrait } from './girls.js';
+import { drawGirlPortrait, drawPuck } from './girls.js';
 import {
   PROLOGUE, JOIN_SCENES, CHAPTERS, HEROINES, ABILITY_TEXT, SPARE_LABEL, TROPHY_LABEL, TROPHY_KEYS, ALLY_BOSS_WEAKEN,
-  endingFor, EPILOGUE, chapterForStage, heroineForStage,
+  endingFor, EPILOGUES, chapterForStage, heroineForStage, BOOKS, bookOf, BOOK2_OPENING, BOOK2_STAGE, ENDINGS, endingId, ENDING_KEYS,
 } from './story.js';
 import { questText, isQuestDone, claimQuest } from './quests.js';
 import { initDialogue, playScene, isDialogueOpen } from './dialogue.js';
@@ -105,6 +106,15 @@ function newBattle() {
     onPet(i) {
       if (state.stats.pets === 1) toast(`💗 ${CATS[i].name} мурчит и стреляет быстрее!`);
     },
+    onChest(reward) {
+      const text = reward.kind === 'gun' ? `пушка ${gunInfo(reward.tier).name}`
+        : reward.kind === 'key' ? 'ключ 🔑' : `🪙 ${formatNumber(reward.amount)}`;
+      toast(`⭐ Звёздный сундук: ${text}!`);
+      if (reward.kind === 'gun') renderArsenal();
+    },
+    onResolve(stacks) {
+      toast(`💢 Упорство: +${Math.round(stacks * RESOLVE.perFail * 100)}% урона против этого босса`);
+    },
     onKey(n) {
       sfx('key');
       toast(`🔑 +${n} ${n > 1 ? 'ключа' : 'ключ'} для золотого кейса!`);
@@ -129,55 +139,85 @@ async function playOnce(id, lines, title) {
 function storyOnStageStart(stage) {
   if (stage !== state.maxStage) return;
   if (JOIN_SCENES[stage]) playOnce(`join${stage}`, JOIN_SCENES[stage], 'Новый боец');
+  if (stage === BOOK2_STAGE) playOnce('book2', BOOK2_OPENING, BOOKS[1].title);
   const ch = chapterForStage(stage);
   if (ch >= 0) {
     const intro = [...CHAPTERS[ch].intro];
-    if (CHAPTERS[ch].final && allies(state).length) {
-      const names = allies(state).map((h) => h.name).join(', ');
-      intro.push({ who: 'narrator', text: `На помощь отряду пришли ${names}! Императрица ослаблена на ${Math.round(ALLY_BOSS_WEAKEN * allies(state).length * 100)}%.` });
+    const helpers = CHAPTERS[ch].final ? allies(state, bookOf(ch)) : [];
+    if (helpers.length) {
+      const names = helpers.map((h) => h.name).join(', ');
+      intro.push({ who: 'narrator', text: `На помощь отряду пришли ${names}! ${BOOKS[bookOf(ch)].finalBoss} ослаблена на ${Math.round(ALLY_BOSS_WEAKEN * helpers.length * 100)}%.` });
     }
     playOnce(`intro${ch}`, intro, CHAPTERS[ch].title);
   }
 }
 
-async function storyOnHeroineDefeated(stage) {
-  const ch = chapterForStage(stage);
+// Сцена выбора после победы над героиней. current — уже сделанный выбор (при переигровке).
+async function askDecision(ch, current = null) {
   const chapter = CHAPTERS[ch];
-  if (state.story.choices[ch]) return;
-  markSeen(state, `outro${ch}`);
+  const mark = (v) => (current === v ? ' · сейчас' : '');
+  const trophyKeys = state.story.trophyPaid[ch] ? '' : ` (+${TROPHY_KEYS} 🔑)`;
   const choice = await playScene(chapter.outro, {
     title: chapter.title,
     choices: [
-      { label: `🤝 ${chapter.spareLabel ?? SPARE_LABEL}`, value: 'spare', primary: true },
-      { label: `🔑 ${chapter.trophyLabel ?? TROPHY_LABEL} (+${TROPHY_KEYS})`, value: 'trophy' },
+      { label: `🤝 ${chapter.spareLabel ?? SPARE_LABEL}${mark('spare')}`, value: 'spare', primary: true },
+      { label: `🔑 ${chapter.trophyLabel ?? TROPHY_LABEL}${trophyKeys}${mark('trophy')}`, value: 'trophy' },
     ],
   });
-  const reward = chooseChapter(state, ch, choice ?? 'spare');
-  await playScene([chapter[choice ?? 'spare']], { title: chapter.title });
-  if (reward) {
-    toast(`👘 Новый костюм: ${SKINS[reward.skin].name}! Загляни во вкладку «Скины»`);
-    if (reward.keys) sfx('key');
-  }
-  if (chapter.final && !hasSeen(state, 'ending')) {
-    markSeen(state, 'ending');
-    await playScene(endingFor(sparedCount(state)), { title: 'Финал' });
-    await playScene(EPILOGUE, { title: 'Конец первой книги' });
-  }
+  const decision = choice ?? current ?? 'spare';
+  const reward = chooseChapter(state, ch, decision);
+  await playScene([chapter[decision]], { title: chapter.title });
+  if (reward.skin) toast(`👘 Новый костюм: ${SKINS[reward.skin].name}! Загляни во вкладку «Скины»`);
+  if (reward.keys) sfx('key');
+  return reward;
+}
+
+async function storyOnHeroineDefeated(stage) {
+  const ch = chapterForStage(stage);
+  if (state.story.choices[ch]) return;
+  markSeen(state, `outro${ch}`);
+  await askDecision(ch);
+  if (CHAPTERS[ch].final) await playEnding(bookOf(ch), true);
   saveToStorage(state);
   renderStory();
   renderWardrobe();
 }
 
-// Сохранения, пройденные до появления сюжета: показываем пропущенные развязки глав,
+// Концовка книги по текущим решениям; новая концовка попадает в альбом и даёт ключи.
+async function playEnding(book, withEpilogue = false) {
+  const ending = endingFor(book, sparedCount(state, book));
+  const r = unlockEnding(state, book);
+  await playScene(ending.lines, { title: `Финал: ${ending.title}` });
+  if (r.isNew) {
+    sfx('jackpot');
+    toast(`📖 Новая концовка «${ending.title}» в альбоме! +${r.keys} 🔑`);
+  }
+  if (withEpilogue) await playScene(EPILOGUES[book], { title: BOOKS[book].title });
+  saveToStorage(state);
+}
+
+// Переиграть решение пройденной главы. Если книга уже пройдена — сразу показываем новую концовку.
+async function changeDecision(ch) {
+  const before = state.story.choices[ch];
+  const reward = await askDecision(ch, before);
+  const book = bookOf(ch);
+  if (reward.changed && isBookFinished(state, book)) {
+    toast('🔄 Решение изменено — судьба книги меняется…');
+    await playEnding(book);
+  }
+  renderStory();
+}
+
+// Сохранения, пройденные до появления сюжета: показываем пропущенные сцены и развязки глав,
 // чтобы игрок сделал выбор и получил костюмы героинь.
 async function storyCatchUp() {
   await playOnce('prologue', PROLOGUE, 'Пролог');
   for (let ch = 0; ch < CHAPTERS.length; ch++) {
     const stage = (ch + 1) * 10;
-    if (state.maxStage > stage && !state.story.choices[ch]) {
-      markSeen(state, `intro${ch}`);
-      await storyOnHeroineDefeated(stage);
-    }
+    if (state.maxStage <= stage || state.story.choices[ch]) continue;
+    if (stage > BOOK2_STAGE) await playOnce('book2', BOOK2_OPENING, BOOKS[1].title);
+    markSeen(state, `intro${ch}`);
+    await storyOnHeroineDefeated(stage);
   }
 }
 
@@ -189,82 +229,132 @@ function replayChapter(ch) {
   playScene(lines, { title: chapter.title });
 }
 
+function storyCard({ title, sub, status, accent, draw, buttons = [], locked = false }) {
+  const el = document.createElement('div');
+  el.className = 'chapter' + (locked ? ' locked' : '');
+  if (accent) el.style.setProperty('--chapter-accent', accent);
+  el.innerHTML = `<canvas width="96" height="96"></canvas>
+    <div><div class="ch-title">${title}</div><div class="ch-sub">${sub}</div>
+    ${status ? `<div class="ch-status" style="color:${accent ?? 'inherit'}">${status}</div>` : ''}</div>
+    <div class="ch-actions"></div>`;
+  const actions = el.querySelector('.ch-actions');
+  for (const b of buttons) {
+    const btn = document.createElement('button');
+    btn.textContent = b.label;
+    btn.onclick = b.onClick;
+    actions.append(btn);
+  }
+  const g = el.querySelector('canvas').getContext('2d');
+  draw(g);
+  return el;
+}
+
+function drawEmoji(g, emoji, bg = '#2a2147') {
+  g.fillStyle = bg;
+  g.fillRect(0, 0, 96, 96);
+  g.font = '44px system-ui';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(emoji, 48, 52);
+}
+
 function renderStory() {
   const box = $('chapter-list');
   box.replaceChildren();
-  const prologue = document.createElement('div');
-  prologue.className = 'chapter';
-  prologue.innerHTML = `<canvas width="96" height="96"></canvas>
-    <div><div class="ch-title">Пролог. Пропажа Великой Рыбы</div>
-    <div class="ch-sub">Мурград остался без Рыбы. Рыжик отправляется в поход.</div></div>`;
-  const pb = document.createElement('button');
-  pb.textContent = '▶ Читать';
-  pb.onclick = () => playScene(PROLOGUE, { title: 'Пролог' });
-  prologue.append(pb);
-  const pc = prologue.querySelector('canvas').getContext('2d');
-  pc.fillStyle = '#352a5a';
-  pc.fillRect(0, 0, 96, 96);
-  drawCatPreview(pc, 0, state.catSkins[0], 96, 96);
-  box.append(prologue);
+  box.append(storyCard({
+    title: 'Пролог. Пропажа Великой Рыбы',
+    sub: 'Мурград остался без Рыбы. Рыжик отправляется в поход.',
+    buttons: [{ label: '▶ Читать', onClick: () => playScene(PROLOGUE, { title: 'Пролог' }) }],
+    draw: (g) => {
+      g.fillStyle = '#352a5a';
+      g.fillRect(0, 0, 96, 96);
+      drawCatPreview(g, 0, state.catSkins[0], 96, 96);
+    },
+  }));
 
-  CHAPTERS.forEach((chapter, ch) => {
-    const h = HEROINES[ch];
-    const stage = (ch + 1) * 10;
-    const choice = state.story.choices[ch];
-    const seen = hasSeen(state, `intro${ch}`);
-    const el = document.createElement('div');
-    el.className = 'chapter' + (seen ? '' : ' locked');
-    el.style.setProperty('--chapter-accent', h.accent);
-    const status = choice === 'spare' ? '🤝 Пощажена — придёт на помощь'
-      : choice === 'trophy' ? `🔑 Трофей взят (+${TROPHY_KEYS} ключа)`
-        : seen ? '⚔️ Бой не окончен' : `🔒 Этап ${stage}`;
-    el.innerHTML = `<canvas width="96" height="96"></canvas>
-      <div><div class="ch-title">${chapter.title}</div>
-      <div class="ch-sub">${seen ? `${h.name}, ${h.title.toLowerCase()} — ${ABILITY_TEXT[h.ability]}` : 'Глава ещё впереди'}</div>
-      <div class="ch-status" style="color:${h.accent}">${status}</div></div>`;
-    if (seen) {
-      const b = document.createElement('button');
-      b.textContent = '▶ Читать';
-      b.onclick = () => replayChapter(ch);
-      el.append(b);
+  BOOKS.forEach((book, b) => {
+    const head = document.createElement('h4');
+    head.className = 'book-title';
+    head.textContent = book.title;
+    if (book.crossover) {
+      const note = document.createElement('small');
+      note.textContent = ` · кроссовер с «${book.crossover}»`;
+      head.append(note);
     }
-    const g = el.querySelector('canvas').getContext('2d');
-    if (seen) {
-      g.fillStyle = h.hair;
-      g.fillRect(0, 0, 96, 96);
-      drawGirlPortrait(g, h.key, 96, 96);
-    } else {
-      g.fillStyle = '#2a2147';
-      g.fillRect(0, 0, 96, 96);
-      g.font = '40px system-ui';
-      g.textAlign = 'center';
-      g.textBaseline = 'middle';
-      g.fillText('❔', 48, 50);
+    box.append(head);
+    if (b === 1) {
+      const opened = hasSeen(state, 'book2');
+      box.append(storyCard({
+        title: 'Разлом над Мурградом',
+        sub: opened ? 'Пак просит помочь его подругам из другого мира.' : `Откроется на этапе ${BOOK2_STAGE}`,
+        locked: !opened,
+        buttons: opened ? [{ label: '▶ Читать', onClick: () => playScene(BOOK2_OPENING, { title: book.title }) }] : [],
+        draw: (g) => {
+          g.fillStyle = '#2a2147';
+          g.fillRect(0, 0, 96, 96);
+          if (opened) drawPuck(g, 48, 52, 22, 1);
+          else drawEmoji(g, '❔');
+        },
+      }));
     }
-    box.append(el);
+    for (let ch = book.first; ch < book.first + 6; ch++) {
+      const chapter = CHAPTERS[ch];
+      const h = HEROINES[ch];
+      const choice = state.story.choices[ch];
+      const seen = hasSeen(state, `intro${ch}`);
+      const status = choice === 'spare' ? (chapter.final ? '🤝 Пощажена' : '🤝 Пощажена — придёт на помощь')
+        : choice === 'trophy' ? '🔑 Трофей взят'
+          : seen ? '⚔️ Бой не окончен' : `🔒 Этап ${(ch + 1) * 10}`;
+      const buttons = [];
+      if (seen) buttons.push({ label: '▶ Читать', onClick: () => replayChapter(ch) });
+      if (choice) buttons.push({ label: '🔄 Решение', onClick: () => changeDecision(ch) });
+      box.append(storyCard({
+        title: chapter.title,
+        sub: seen ? `${h.name}, ${h.title.toLowerCase()} — ${ABILITY_TEXT[h.ability]}` : 'Глава ещё впереди',
+        status,
+        accent: h.accent === '#ffffff' ? h.hair : h.accent,
+        locked: !seen,
+        buttons,
+        draw: (g) => {
+          if (!seen) return drawEmoji(g, '❔');
+          g.fillStyle = h.hair;
+          g.fillRect(0, 0, 96, 96);
+          drawGirlPortrait(g, h.key, 96, 96);
+        },
+      }));
+    }
   });
-  if (hasSeen(state, 'ending')) {
-    const end = document.createElement('div');
-    end.className = 'chapter';
-    end.innerHTML = `<canvas width="96" height="96"></canvas><div><div class="ch-title">Финал</div>
-      <div class="ch-sub">Пощажено героинь: ${sparedCount(state)} из ${CHAPTERS.length}</div></div>`;
-    const b = document.createElement('button');
-    b.textContent = '▶ Читать';
-    b.onclick = () => playScene([...endingFor(sparedCount(state)), ...EPILOGUE], { title: 'Финал' });
-    end.append(b);
-    const g = end.querySelector('canvas').getContext('2d');
-    g.font = '48px system-ui';
-    g.textAlign = 'center';
-    g.textBaseline = 'middle';
-    g.fillText('🐟', 48, 50);
-    box.append(end);
-  }
+  renderEndings();
+}
+
+// Альбом концовок: по три на книгу. Подсказка говорит, как получить недостающую.
+const ENDING_HINTS = { good: 'пощади 5–6 героинь книги', mid: 'пощади 2–4 героини', bad: 'пощади не больше одной' };
+const ENDING_ICONS = { good: '🌸', mid: '🐟', bad: '🌧️' };
+function renderEndings() {
+  const box = $('ending-list');
+  box.replaceChildren();
+  BOOKS.forEach((book, b) => {
+    for (const kind of ['good', 'mid', 'bad']) {
+      const id = endingId(b, kind);
+      const open = state.story.endings.includes(id);
+      const e = ENDINGS[b][kind];
+      const card = document.createElement('button');
+      card.className = 'ending' + (open ? '' : ' locked');
+      card.innerHTML = `<span class="ending-icon">${open ? ENDING_ICONS[kind] : '🔒'}</span>
+        <b>${open ? e.title : '???'}</b><small>Книга ${b + 1} · ${open ? 'нажми, чтобы перечитать' : ENDING_HINTS[kind]}</small>`;
+      card.onclick = () => (open ? playScene(e.lines, { title: `Финал: ${e.title}` })
+        : toast(`Чтобы открыть: ${ENDING_HINTS[kind]}. Решения можно переиграть кнопкой «🔄 Решение».`));
+      box.append(card);
+    }
+  });
+  const total = BOOKS.length * 3;
+  $('endings-count').textContent = `${state.story.endings.length} из ${total} · за каждую новую +${ENDING_KEYS} 🔑`;
 }
 
 // ---------- Задания ----------
 const questRows = [];
 function questGoldReward() {
-  return idleGoldPerSecond(Math.max(1, state.stage), statsOf(state), SPAWN_INTERVAL) * QUEST_GOLD_SECONDS;
+  return idleGoldPerSecond(Math.max(1, state.stage), statsOf(state)) * QUEST_GOLD_SECONDS;
 }
 
 function updateQuests() {
@@ -852,6 +942,12 @@ function setupPrestige() {
       ],
     });
   };
+  const autoBoss = $('auto-boss');
+  autoBoss.checked = state.autoBoss;
+  autoBoss.onchange = () => {
+    state.autoBoss = autoBoss.checked;
+    toast(state.autoBoss ? '🔁 Отряд будет сам возвращаться к боссу' : 'Авто-вызов босса выключен');
+  };
   $('reset-btn').onclick = () => {
     showModal({
       icon: '⚠️',
@@ -897,6 +993,9 @@ function updateStats(stats) {
     ['Котиков поглажено', formatNumber(state.stats.pets)],
     ['Выполнено заданий', formatNumber(state.questsDone)],
     ['Пощажено героинь', `${sparedCount(state)} из ${CHAPTERS.length}`],
+    ['Концовок в альбоме', `${state.story.endings.length} из ${BOOKS.length * 3}`],
+    ['Звёздных сундуков', formatNumber(state.stats.chests)],
+    ['Лучшее комбо лапкой', `×${state.stats.bestCombo}`],
     ['Костюмов', `${state.skins.length} из ${Object.keys(SKINS).length}`],
     ['Текущий этап', state.stage],
     ['Рекорд этапа', state.maxStage],
@@ -917,13 +1016,18 @@ function updateUI(force = false) {
   $('gold').textContent = formatNumber(state.gold);
   $('bones').textContent = formatNumber(state.bones);
   const boss = isBossStage(state.stage);
-  $('stage-label').textContent = `${boss ? '👑 ' : ''}Этап ${state.stage} · ${biomeFor(state.stage).name}`;
+  const resolve = resolveMult(state) > 1 ? ` 💢+${Math.round((resolveMult(state) - 1) * 100)}%` : '';
+  $('stage-label').textContent = `${boss ? '👑 ' : ''}Этап ${state.stage} · ${biomeFor(state.stage).name}${resolve}`;
   $('stage-progress').style.width = `${Math.min(1, battle.progress) * 100}%`;
   $('stage-progress').parentElement.classList.toggle('boss', boss);
   $('stage-progress-text').textContent = boss
     ? `⏱ ${Math.max(0, battle.bossTimer).toFixed(1)} с`
     : `${battle.killed} / 10`;
   $('boss-btn').hidden = state.autoAdvance;
+  if (!state.autoAdvance) {
+    const left = Math.ceil(AUTO_BOSS_DELAY - battle.farmTimer);
+    $('boss-btn').textContent = state.autoBoss ? `⚔️ В бой с боссом! (сам через ${left} с)` : '⚔️ В бой с боссом!';
+  }
   updateSkills();
 
   // Тяжёлые панели обновляем реже.

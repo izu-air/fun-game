@@ -71,3 +71,26 @@ test('слияние и кейсы засчитываются в задания'
   assert.equal(s.quests[0].progress, 1);
   assert.equal(s.quests[1].progress, 1);
 });
+
+test('задания выдаются по рекорду этапа', () => {
+  for (let k = 0; k < 30; k++) {
+    const qs = initialQuests(Math.random, 1);
+    assert.ok(qs.every((q) => (QUEST_TYPES[q.type].minStage ?? 1) <= 1), qs.map((q) => q.type).join());
+  }
+  const s = createState();
+  s.maxStage = 1;
+  for (let k = 0; k < 20; k++) {
+    s.quests[0].progress = s.quests[0].target;
+    claimQuest(s, 0, 0);
+    assert.ok((QUEST_TYPES[s.quests[0].type].minStage ?? 1) <= 1, s.quests[0].type);
+  }
+});
+
+test('задание на комбо засчитывает рекорд, а не сумму, и не требует больше предела', () => {
+  const s = createState();
+  s.quests = [{ type: 'combo', target: 15, progress: 0 }, { type: 'kills', target: 5, progress: 0 }, { type: 'pets', target: 2, progress: 0 }];
+  progressQuest(s, 'combo', 7);
+  progressQuest(s, 'combo', 4);
+  assert.equal(s.quests[0].progress, 7);
+  assert.ok(questTarget('combo', 1000) <= 30);
+});

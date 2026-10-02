@@ -1,8 +1,8 @@
 // Процедурная отрисовка: фон биома с параллаксом, отряд котиков, оружие, враги, препятствия, эффекты.
 import { WORLD, SQUAD } from './battle.js';
 import { biomeFor } from './formulas.js';
-import { CATS } from './config.js';
-import { drawGirl, lookFor } from './girls.js';
+import { CATS, TAP } from './config.js';
+import { drawGirl, lookFor, drawPuck } from './girls.js';
 
 const TAU = Math.PI * 2;
 
@@ -39,8 +39,10 @@ export function render(ctx, battle, time) {
   drawOrbs(ctx, battle.orbs, time);
   drawBullets(ctx, battle.bullets);
   drawParticles(ctx, battle.particles);
+  if (battle.chest) drawChest(ctx, battle.chest, time);
   drawTexts(ctx, battle.texts);
   ctx.restore();
+  if (battle.combo.count >= 3) drawCombo(ctx, battle.combo, time);
 
   if (battle.buffs.rage > 0) {
     ctx.fillStyle = `rgba(255, 60, 60, ${0.08 + Math.sin(time * 8) * 0.04})`;
@@ -438,7 +440,7 @@ function drawCat(ctx, pos, def, gun, cs, battle, time, skin = null, outerScale =
 }
 
 // ---------- Аниме-скины котиков ----------
-const SKIN_HIDES_BAND = new Set(['samurai', 'snowmage', 'mecha', 'moonlord']);
+const SKIN_HIDES_BAND = new Set(['samurai', 'snowmage', 'mecha', 'moonlord', 'maidRam', 'maidRem', 'librarian', 'iceSpirit', 'witch']);
 
 // Детали за спиной: плащи и дополнительные хвосты.
 function drawSkinBack(ctx, skin, time, fur) {
@@ -471,6 +473,25 @@ function drawSkinBack(ctx, skin, time, fur) {
         ctx.fillStyle = '#ffffff';
         circle(ctx, -40 - k * 4, -30 - k * 10, 5);
       }
+      break;
+    case 'witch':
+      ctx.fillStyle = '#1b1b1f';
+      ctx.beginPath();
+      ctx.moveTo(-6, -34);
+      ctx.lineTo(10, -34);
+      ctx.lineTo(-24 + flutter, 0);
+      ctx.lineTo(-34 + flutter, -4);
+      ctx.closePath();
+      ctx.fill();
+      break;
+    case 'thief':
+      ctx.fillStyle = '#c92a2a';
+      ctx.beginPath();
+      ctx.moveTo(0, -36);
+      ctx.quadraticCurveTo(-22, -36 + flutter, -36, -26 + flutter * 1.5);
+      ctx.lineTo(-34, -20 + flutter);
+      ctx.quadraticCurveTo(-18, -28, 0, -30);
+      ctx.fill();
       break;
     case 'kunoichi':
       ctx.fillStyle = '#5f3dc4';
@@ -570,6 +591,67 @@ function drawSkinHead(ctx, skin, hx, hy, time) {
       ctx.fillStyle = '#5f3dc4';
       circle(ctx, hx + 2, hy - 10, 4);
       break;
+    case 'thief':
+      ctx.fillStyle = '#c92a2a';
+      ctx.fillRect(hx - 15, hy + 12, 30, 6); // шарф на шее
+      break;
+    case 'maidRam':
+    case 'maidRem': {
+      // кружевная наколка и заколка-крестик, как у сестёр-горничных
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.ellipse(hx, hy - 15, 13, 4, 0, Math.PI, TAU);
+      ctx.fill();
+      for (let i = -2; i <= 2; i++) circle(ctx, hx + i * 5.5, hy - 15, 2.6);
+      if (skin === 'maidRem') {
+        // фартук на животике (живот — на 30 пикс ниже головы)
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        roundRect(ctx, hx - 9, hy + 22, 16, 18, 4);
+      }
+      ctx.strokeStyle = skin === 'maidRam' ? '#ff8fab' : '#4dabf7';
+      ctx.lineWidth = 2;
+      const cx = skin === 'maidRam' ? hx - 9 : hx + 9;
+      ctx.beginPath();
+      ctx.moveTo(cx - 3, hy - 11);
+      ctx.lineTo(cx + 3, hy - 5);
+      ctx.moveTo(cx + 3, hy - 11);
+      ctx.lineTo(cx - 3, hy - 5);
+      ctx.stroke();
+      break;
+    }
+    case 'librarian':
+      ctx.fillStyle = '#e64980';
+      tri(ctx, hx, hy - 16, hx - 13, hy - 24, hx - 13, hy - 9);
+      tri(ctx, hx, hy - 16, hx + 13, hy - 24, hx + 13, hy - 9);
+      circle(ctx, hx, hy - 16, 3.5);
+      break;
+    case 'iceSpirit':
+      ctx.fillStyle = '#ffffff';
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * TAU + time * 0.3;
+        circle(ctx, hx - 10 + Math.cos(a) * 4, hy - 14 + Math.sin(a) * 4, 2.8);
+      }
+      ctx.fillStyle = '#9b6fd6';
+      circle(ctx, hx - 10, hy - 14, 2);
+      ctx.strokeStyle = 'rgba(165, 216, 255, 0.9)';
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * Math.PI;
+        ctx.beginPath();
+        ctx.moveTo(hx + 10 - Math.cos(a) * 4, hy - 16 - Math.sin(a) * 4);
+        ctx.lineTo(hx + 10 + Math.cos(a) * 4, hy - 16 + Math.sin(a) * 4);
+        ctx.stroke();
+      }
+      break;
+    case 'witch': {
+      const flap = 0.7 + Math.sin(time * 6) * 0.3;
+      ctx.fillStyle = '#9775fa';
+      ctx.beginPath();
+      ctx.ellipse(hx + 6, hy - 15, 5 * flap, 3.5, -0.5, 0, TAU);
+      ctx.ellipse(hx + 13, hy - 15, 5 * flap, 3.5, 0.5, 0, TAU);
+      ctx.fill();
+      break;
+    }
     case 'idol':
       ctx.fillStyle = '#ff6b9d';
       tri(ctx, hx - 2, hy - 18, hx - 14, hy - 26, hx - 14, hy - 12);
@@ -595,8 +677,9 @@ function drawGirlEnemy(ctx, e, time, battle) {
   const look = lookFor(e, battle.state.stage);
   ctx.save();
   ctx.translate(e.x - e.lunge * 8, e.y);
-  drawGirl(ctx, look, { H: e.height, phase: e.phase, lunge: e.lunge, walking: e.x > battle.stopX(e) + 0.5, flash: e.flash, time });
+  drawGirl(ctx, look, { H: e.height, phase: e.phase, lunge: e.lunge, walking: e.x > battle.stopX(e) + 0.5, flash: e.flash, time, enraged: e.enraged });
   ctx.restore();
+  if (e.heroine?.key === 'emilia') drawPuck(ctx, e.x + e.size * 1.8, e.y - e.height * 0.9, 9, time);
   if (e.shield > 0) {
     ctx.strokeStyle = `rgba(125, 211, 252, ${0.6 + Math.sin(time * 12) * 0.3})`;
     ctx.fillStyle = 'rgba(125, 211, 252, 0.15)';
@@ -613,6 +696,15 @@ function drawGirlEnemy(ctx, e, time, battle) {
 
 function drawOrbs(ctx, orbs, time) {
   for (const o of orbs) {
+    if (o.wind) {
+      // ветряное лезвие — зелёный полумесяц
+      ctx.strokeStyle = 'rgba(150, 242, 215, 0.9)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(o.x + 6, o.y, 9, Math.PI * 0.6, Math.PI * 1.4);
+      ctx.stroke();
+      continue;
+    }
     const g = ctx.createRadialGradient(o.x, o.y, 1, o.x, o.y, 11);
     g.addColorStop(0, '#ffffff');
     g.addColorStop(0.4, '#c4b5fd');
@@ -620,6 +712,52 @@ function drawOrbs(ctx, orbs, time) {
     ctx.fillStyle = g;
     circle(ctx, o.x, o.y, 11 + Math.sin(time * 15) * 1.5);
   }
+}
+
+// ---------- Звёздный сундук и комбо ----------
+function drawChest(ctx, c, time) {
+  const bob = Math.sin(time * 5) * 4;
+  // искрящийся след
+  for (let i = 1; i <= 5; i++) {
+    ctx.fillStyle = `rgba(255, 243, 176, ${0.5 - i * 0.08})`;
+    star(ctx, c.x + i * 12, c.y + bob + Math.sin(time * 8 + i) * 3, 5 - i * 0.6);
+  }
+  ctx.save();
+  ctx.translate(c.x, c.y + bob);
+  ctx.rotate(Math.sin(time * 3) * 0.1);
+  ctx.fillStyle = 'rgba(255, 220, 120, 0.35)';
+  circle(ctx, 0, 0, 22);
+  ctx.fillStyle = '#b5651d';
+  roundRect(ctx, -14, -8, 28, 18, 3);
+  ctx.fillStyle = '#d4892b';
+  roundRect(ctx, -15, -14, 30, 9, 4);
+  ctx.fillStyle = '#ffd43b';
+  ctx.fillRect(-15, -6, 30, 3);
+  ctx.fillRect(-2, -14, 4, 24);
+  star(ctx, 0, -1, 4);
+  ctx.restore();
+}
+
+function drawCombo(ctx, combo, time) {
+  const mult = 1 + (combo.count - 1) * TAP.comboStep;
+  const pulse = 1 + Math.sin(time * 12) * 0.04;
+  ctx.save();
+  ctx.translate(WORLD.width / 2 + 40, WORLD.groundY + 34); // на земле — не мешает сундукам и именам героинь
+  ctx.scale(pulse, pulse);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '900 22px system-ui, sans-serif';
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+  const text = `🐾 Комбо ${combo.count} · ×${mult.toFixed(2)}`;
+  ctx.strokeText(text, 0, 0);
+  ctx.fillStyle = combo.count >= 20 ? '#ff6b6b' : combo.count >= 10 ? '#ffd166' : '#ffffff';
+  ctx.fillText(text, 0, 0);
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  ctx.fillRect(-60, 14, 120, 4);
+  ctx.fillStyle = '#ffd166';
+  ctx.fillRect(-60, 14, 120 * (combo.timer / TAP.comboWindow), 4);
+  ctx.restore();
 }
 
 // ---------- Враги ----------

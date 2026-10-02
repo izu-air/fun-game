@@ -39,7 +39,7 @@ export function lookForHeroine(key) {
 }
 
 // opts: { H — высота, phase — фаза шага, lunge — 0..1 замах, walking, flash, time }
-export function drawGirl(ctx, look, { H, phase = 0, lunge = 0, walking = true, flash = 0, time = 0 }) {
+export function drawGirl(ctx, look, { H, phase = 0, lunge = 0, walking = true, flash = 0, time = 0, enraged = false }) {
   const r = H * 0.22; // радиус головы
   const hx = 0;
   const hy = -H + r * 1.05;
@@ -83,8 +83,9 @@ export function drawGirl(ctx, look, { H, phase = 0, lunge = 0, walking = true, f
   ctx.beginPath();
   ctx.moveTo(-H * 0.12, -H * 0.42);
   ctx.lineTo(H * 0.12, -H * 0.42);
-  ctx.lineTo(H * 0.2, -H * (look.hat || look.heroineKey === 'yuki' || look.heroineKey === 'luna' ? 0.06 : 0.14));
-  ctx.lineTo(-H * 0.2, -H * (look.hat || look.heroineKey === 'yuki' || look.heroineKey === 'luna' ? 0.06 : 0.14));
+  const longDress = look.hat || look.maid || ['yuki', 'luna', 'emilia', 'echidna', 'beatrice'].includes(look.heroineKey);
+  ctx.lineTo(H * 0.2, -H * (longDress ? 0.06 : 0.14));
+  ctx.lineTo(-H * 0.2, -H * (longDress ? 0.06 : 0.14));
   ctx.closePath();
   ctx.fill();
   ctx.fillStyle = 'rgba(0,0,0,0.12)';
@@ -100,9 +101,36 @@ export function drawGirl(ctx, look, { H, phase = 0, lunge = 0, walking = true, f
     circle(ctx, -H * 0.13, -H * 0.53, H * 0.05);
     circle(ctx, H * 0.13, -H * 0.53, H * 0.05);
   }
+  // фартук горничной
+  if (look.maid) {
+    ctx.fillStyle = '#ffffff';
+    roundRect(ctx, -H * 0.08, -H * 0.52, H * 0.16, H * 0.1, H * 0.02);
+    ctx.beginPath();
+    ctx.moveTo(-H * 0.1, -H * 0.42);
+    ctx.lineTo(H * 0.1, -H * 0.42);
+    ctx.lineTo(H * 0.13, -H * 0.1);
+    ctx.lineTo(-H * 0.13, -H * 0.1);
+    ctx.closePath();
+    ctx.fill();
+  }
   // пояс-оби / ремень
   ctx.fillStyle = look.accent;
   ctx.fillRect(-H * 0.125, -H * 0.43, H * 0.25, H * 0.04);
+  if (look.bow) {
+    ctx.fillStyle = look.accent;
+    tri(ctx, 0, -H * 0.54, -H * 0.07, -H * 0.58, -H * 0.07, -H * 0.5);
+    tri(ctx, 0, -H * 0.54, H * 0.07, -H * 0.58, H * 0.07, -H * 0.5);
+  }
+  if (look.scarf) {
+    ctx.fillStyle = look.accent;
+    roundRect(ctx, -H * 0.1, -H * 0.6, H * 0.2, H * 0.05, H * 0.02);
+    ctx.beginPath();
+    ctx.moveTo(H * 0.06, -H * 0.58);
+    ctx.quadraticCurveTo(H * 0.2 + sway * 4, -H * 0.55, H * 0.24 + sway * 6, -H * 0.46);
+    ctx.lineTo(H * 0.2 + sway * 6, -H * 0.45);
+    ctx.quadraticCurveTo(H * 0.15, -H * 0.52, H * 0.04, -H * 0.55);
+    ctx.fill();
+  }
   // воротник-кимоно у мечниц
   if (look.weapon === 'katana' && !look.armor) {
     ctx.strokeStyle = look.accent;
@@ -118,10 +146,23 @@ export function drawGirl(ctx, look, { H, phase = 0, lunge = 0, walking = true, f
   // шея и голова
   ctx.fillStyle = SKIN;
   ctx.fillRect(-H * 0.03, -H * 0.6, H * 0.06, H * 0.06);
+  if (look.elf) {
+    // заострённые эльфийские уши
+    ctx.fillStyle = SKIN;
+    tri(ctx, hx - r * 0.9, hy + r * 0.05, hx - r * 1.45, hy - r * 0.35, hx - r * 0.85, hy + r * 0.35);
+    tri(ctx, hx + r * 0.9, hy + r * 0.05, hx + r * 1.45, hy - r * 0.35, hx + r * 0.85, hy + r * 0.35);
+  }
   circle(ctx, hx, hy, r);
   drawFace(ctx, look, hx, hy, r, time + phase);
   drawFrontHair(ctx, look, hx, hy, r, hairDark);
   drawHeadwear(ctx, look, hx, hy, r, time);
+  if (enraged) {
+    // светящийся рог они на лбу
+    ctx.fillStyle = `rgba(255, 255, 255, ${0.8 + Math.sin(time * 10) * 0.2})`;
+    tri(ctx, hx - r * 0.12, hy - r * 0.95, hx + r * 0.12, hy - r * 0.95, hx, hy - r * 1.6);
+    ctx.fillStyle = 'rgba(255, 80, 80, 0.25)';
+    circle(ctx, hx, hy - r * 1.2, r * 0.45);
+  }
 
   // рука с оружием — вытянута к отряду
   const swing = -lunge * 0.9;
@@ -153,6 +194,23 @@ function drawBackHair(ctx, look, hx, hy, r, H, sway, hairDark) {
       ctx.quadraticCurveTo(hx + r * 2 + sway * 6, hy - r * 0.2, hx + r * 1.5 + sway * 8, hy + r * 1.8);
       ctx.quadraticCurveTo(hx + r * 1.2, hy + r * 0.6, hx + r * 0.6, hy + r * 0.2);
       ctx.fill();
+      break;
+    case 'short':
+      roundRect(ctx, hx - r * 1.05, hy - r * 0.5, r * 2.1, r * 1.1, r * 0.4);
+      break;
+    case 'drill':
+      // длинные локоны-«дрели» по бокам
+      for (const side of [-1, 1]) {
+        for (let k = 0; k < 4; k++) {
+          const cx = hx + side * r * (1.15 + k * 0.03);
+          const cy = hy + r * (0.15 + k * 0.42) + sway * 2;
+          ctx.fillStyle = k % 2 ? hairDark : look.hair;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, r * (0.36 - k * 0.04), r * 0.26, 0, 0, TAU);
+          ctx.fill();
+        }
+      }
+      ctx.fillStyle = hairDark;
       break;
     case 'twin':
       for (const side of [-1, 1]) {
@@ -322,6 +380,48 @@ function drawHeadwear(ctx, look, hx, hy, r, time) {
     ctx.fillRect(hx + r * 0.72, hy - r * 0.6, r * 0.1, r * 0.04);
     ctx.fillRect(hx + r * 0.92, hy - r * 0.55, r * 0.1, r * 0.04);
   }
+  if (look.maid) {
+    // кружевная наколка горничной
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.ellipse(hx, hy - r * 0.92, r * 0.7, r * 0.2, 0, Math.PI, TAU);
+    ctx.fill();
+    for (let i = -2; i <= 2; i++) circle(ctx, hx + i * r * 0.28, hy - r * 0.95, r * 0.12);
+  }
+  if (look.clip) {
+    // заколка-крестик над глазом, у Рам и Рем с разных сторон
+    const side = look.clip === 'left' ? -1 : 1;
+    ctx.strokeStyle = look.heroineKey === 'ram' ? '#ffffff' : '#ffd6e7';
+    ctx.lineWidth = r * 0.07;
+    ctx.beginPath();
+    ctx.moveTo(hx + side * r * 0.45, hy - r * 0.55);
+    ctx.lineTo(hx + side * r * 0.7, hy - r * 0.3);
+    ctx.moveTo(hx + side * r * 0.7, hy - r * 0.55);
+    ctx.lineTo(hx + side * r * 0.45, hy - r * 0.3);
+    ctx.stroke();
+  }
+  if (look.flower) {
+    ctx.fillStyle = '#ffffff';
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * TAU;
+      circle(ctx, hx - r * 0.75 + Math.cos(a) * r * 0.15, hy - r * 0.55 + Math.sin(a) * r * 0.15, r * 0.1);
+    }
+    ctx.fillStyle = '#9b6fd6';
+    circle(ctx, hx - r * 0.75, hy - r * 0.55, r * 0.07);
+  }
+  if (look.butterfly) {
+    ctx.fillStyle = '#9775fa';
+    const flap = 0.7 + Math.sin(time * 6) * 0.3;
+    ctx.beginPath();
+    ctx.ellipse(hx + r * 0.62, hy - r * 0.75, r * 0.2 * flap, r * 0.14, -0.5, 0, TAU);
+    ctx.ellipse(hx + r * 0.88, hy - r * 0.75, r * 0.2 * flap, r * 0.14, 0.5, 0, TAU);
+    ctx.fill();
+  }
+  if (look.bow && look.style === 'drill') {
+    ctx.fillStyle = look.accent;
+    tri(ctx, hx, hy - r * 1.05, hx - r * 0.45, hy - r * 1.3, hx - r * 0.45, hy - r * 0.8);
+    tri(ctx, hx, hy - r * 1.05, hx + r * 0.45, hy - r * 1.3, hx + r * 0.45, hy - r * 0.8);
+  }
   if (look.crown) {
     ctx.fillStyle = '#ffd43b';
     ctx.beginPath();
@@ -395,6 +495,67 @@ function drawWeapon(ctx, look, x, y, H, time) {
       }
       break;
     }
+    case 'dagger':
+      ctx.rotate(0.3);
+      ctx.fillStyle = '#5c3d2e';
+      ctx.fillRect(-H * 0.02, -H * 0.012, H * 0.06, H * 0.024);
+      ctx.fillStyle = '#dee2e6';
+      tri(ctx, -H * 0.02, -H * 0.022, -H * 0.02, H * 0.022, -H * 0.2, 0);
+      break;
+    case 'wand': {
+      ctx.rotate(1.0);
+      ctx.fillStyle = '#5c3d2e';
+      ctx.fillRect(-H * 0.24, -H * 0.01, H * 0.26, H * 0.02);
+      const glow = 0.5 + Math.sin(time * 6) * 0.3;
+      ctx.fillStyle = `rgba(150, 242, 215, ${glow})`;
+      circle(ctx, -H * 0.25, 0, H * 0.045);
+      break;
+    }
+    case 'flail': {
+      // моргенштерн на цепи — шар покачивается
+      ctx.fillStyle = '#5c3d2e';
+      ctx.fillRect(-H * 0.08, -H * 0.012, H * 0.1, H * 0.024);
+      const swingA = Math.sin(time * 3) * 0.6;
+      const bx = -H * 0.08 - Math.cos(swingA) * H * 0.16;
+      const by = Math.sin(swingA) * H * 0.16;
+      ctx.strokeStyle = '#868e96';
+      ctx.lineWidth = H * 0.01;
+      ctx.beginPath();
+      ctx.moveTo(-H * 0.08, 0);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      ctx.fillStyle = '#495057';
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * TAU;
+        tri(ctx, bx + Math.cos(a) * H * 0.04, by + Math.sin(a) * H * 0.04,
+          bx + Math.cos(a + 0.3) * H * 0.04, by + Math.sin(a + 0.3) * H * 0.04,
+          bx + Math.cos(a + 0.15) * H * 0.075, by + Math.sin(a + 0.15) * H * 0.075);
+      }
+      circle(ctx, bx, by, H * 0.045);
+      break;
+    }
+    case 'book':
+      ctx.rotate(0.2);
+      ctx.fillStyle = look.heroineKey === 'echidna' ? '#3b2a6b' : '#7a2e4a';
+      roundRect(ctx, -H * 0.12, -H * 0.06, H * 0.11, H * 0.12, H * 0.01);
+      ctx.fillStyle = '#ffd43b';
+      ctx.fillRect(-H * 0.1, -H * 0.045, H * 0.015, H * 0.09);
+      ctx.fillStyle = `rgba(255, 243, 176, ${0.4 + Math.sin(time * 5) * 0.3})`;
+      circle(ctx, -H * 0.065, -H * 0.09, H * 0.03);
+      break;
+    case 'ice':
+      ctx.rotate(0.9);
+      ctx.fillStyle = 'rgba(165, 216, 255, 0.9)';
+      ctx.beginPath();
+      ctx.moveTo(-H * 0.05, 0);
+      ctx.lineTo(-H * 0.12, -H * 0.04);
+      ctx.lineTo(-H * 0.26, 0);
+      ctx.lineTo(-H * 0.12, H * 0.04);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      circle(ctx, -H * 0.14, -H * 0.01, H * 0.012);
+      break;
     case 'baton': {
       ctx.rotate(0.4);
       ctx.fillStyle = '#343a40';
@@ -426,6 +587,15 @@ function circle(ctx, x, y, r) {
   ctx.fill();
 }
 
+function tri(ctx, x1, y1, x2, y2, x3, y3) {
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.lineTo(x3, y3);
+  ctx.closePath();
+  ctx.fill();
+}
+
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.roundRect(x, y, w, h, r);
@@ -441,4 +611,37 @@ function star(ctx, x, y, r) {
   }
   ctx.closePath();
   ctx.fill();
+}
+
+// Пак — дух-кот Эмилии: маленький серый котик, который парит в воздухе.
+export function drawPuck(ctx, x, y, s, time = 0) {
+  const bob = Math.sin(time * 3) * s * 0.15;
+  ctx.save();
+  ctx.translate(x, y + bob);
+  ctx.fillStyle = 'rgba(200, 230, 255, 0.25)';
+  circle(ctx, 0, 0, s * 1.5);
+  ctx.fillStyle = '#9aa3ad';
+  tri(ctx, -s * 0.9, -s * 0.3, -s * 0.75, -s * 1.3, -s * 0.15, -s * 0.75);
+  tri(ctx, s * 0.9, -s * 0.3, s * 0.75, -s * 1.3, s * 0.15, -s * 0.75);
+  ctx.fillStyle = '#ffc9de';
+  tri(ctx, -s * 0.7, -s * 0.5, -s * 0.65, -s * 1.05, -s * 0.3, -s * 0.75);
+  tri(ctx, s * 0.7, -s * 0.5, s * 0.65, -s * 1.05, s * 0.3, -s * 0.75);
+  ctx.fillStyle = '#b7bec7';
+  circle(ctx, 0, 0, s);
+  ctx.fillStyle = '#1b1b2f';
+  circle(ctx, -s * 0.35, -s * 0.05, s * 0.16);
+  circle(ctx, s * 0.35, -s * 0.05, s * 0.16);
+  ctx.fillStyle = '#ffffff';
+  circle(ctx, -s * 0.3, -s * 0.12, s * 0.06);
+  circle(ctx, s * 0.4, -s * 0.12, s * 0.06);
+  ctx.fillStyle = '#ff8fab';
+  circle(ctx, 0, s * 0.22, s * 0.1);
+  ctx.strokeStyle = '#7d8590';
+  ctx.lineWidth = s * 0.12;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(s * 0.8, s * 0.5);
+  ctx.quadraticCurveTo(s * 1.5, s * 0.6 + Math.sin(time * 4) * s * 0.2, s * 1.4, -s * 0.1);
+  ctx.stroke();
+  ctx.restore();
 }

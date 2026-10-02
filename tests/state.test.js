@@ -4,8 +4,9 @@ import {
   createState, buyUpgrade, nextCost, prestige, canPrestige, applyOffline, serialize, deserialize,
   saveToStorage, loadFromStorage, buyGun, addGun, mergeGuns, mergeAll, equipGun, equipBest,
   nextGunCost, openCase, casePrice, caseBlocker, pityLeft, cycleSpeed, availableSpeeds, addKeys,
-  equipSkin, grantSkin, chooseChapter, allies, sparedCount, hasSeen, markSeen,
+  equipSkin, grantSkin, chooseChapter, allies, sparedCount, hasSeen, markSeen, unlockEnding,
 } from '../src/state.js';
+import { ENDING_KEYS } from '../src/story.js';
 import { rollCaseBonus, caseOdds } from '../src/formulas.js';
 import {
   UPGRADES, OFFLINE_MAX_SECONDS, INVENTORY_SIZE, CATS, CASES, JACKPOT_BONUS, KEYS, MAX_GUN_TIER,
@@ -354,23 +355,49 @@ test('скорость: ×5 открывается после перерожде
 });
 
 // ---------- Сюжет и скины ----------
-test('выбор в главе: костюм всегда, ключи — только за трофей, выбор один раз', () => {
+test('решение в главе можно переиграть; ключи за трофей — один раз', () => {
   const s = createState();
   const keys = s.keys;
-  assert.deepEqual(chooseChapter(s, 0, 'spare'), { skin: 'samurai', keys: 0 });
+  assert.deepEqual(chooseChapter(s, 0, 'spare'), { skin: 'samurai', keys: 0, changed: false });
   assert.ok(s.skins.includes('samurai'));
-  assert.equal(chooseChapter(s, 0, 'trophy'), null, 'передумать нельзя');
-  assert.deepEqual(chooseChapter(s, 1, 'trophy'), { skin: 'kunoichi', keys: 2 });
+  assert.deepEqual(chooseChapter(s, 0, 'trophy'), { skin: null, keys: 2, changed: true });
+  assert.deepEqual(chooseChapter(s, 0, 'spare'), { skin: null, keys: 0, changed: true });
+  assert.deepEqual(chooseChapter(s, 0, 'trophy'), { skin: null, keys: 0, changed: true }, 'ключи не фармятся');
   assert.equal(s.keys, keys + 2);
-  assert.equal(sparedCount(s), 1);
-  assert.deepEqual(allies(s).map((h) => h.key), ['sakura']);
+  assert.equal(chooseChapter(s, 1, 'steal'), null);
 });
 
-test('Императрица не считается своей же союзницей', () => {
+test('союзницы и пощажённые считаются по книгам', () => {
   const s = createState();
   for (let ch = 0; ch < 6; ch++) chooseChapter(s, ch, 'spare');
-  assert.equal(allies(s).length, 5);
-  assert.equal(sparedCount(s), 6);
+  chooseChapter(s, 6, 'spare');
+  assert.equal(allies(s, 0).length, 5, 'Императрица не союзница сама себе');
+  assert.equal(sparedCount(s, 0), 6);
+  assert.equal(sparedCount(s, 1), 1);
+  assert.equal(sparedCount(s), 7);
+  assert.deepEqual(allies(s, 1).map((h) => h.key), ['felt']);
+});
+
+test('альбом концовок: каждая книга, три концовки, ключи за новую', () => {
+  const s = createState();
+  const keys = s.keys;
+  let r = unlockEnding(s, 0);
+  assert.deepEqual(r, { id: 'b1-bad', kind: 'bad', isNew: true, keys: ENDING_KEYS });
+  for (let ch = 0; ch < 6; ch++) chooseChapter(s, ch, 'spare');
+  r = unlockEnding(s, 0);
+  assert.equal(r.id, 'b1-good');
+  assert.equal(unlockEnding(s, 0).isNew, false);
+  assert.deepEqual(s.story.endings, ['b1-bad', 'b1-good']);
+  assert.equal(s.keys, keys + 2 * ENDING_KEYS + 0, 'трофеев не брали — только ключи за концовки');
+});
+
+test('старое сохранение: трофей уже оплачен, увиденная концовка попадает в альбом', () => {
+  const s = deserialize(JSON.stringify({
+    story: { seen: ['ending'], choices: { 0: 'trophy', 1: 'spare', 2: 'spare' } },
+  }));
+  assert.equal(s.story.trophyPaid[0], true);
+  assert.equal(chooseChapter(s, 0, 'trophy').keys, 0);
+  assert.deepEqual(s.story.endings, ['b1-mid']);
 });
 
 test('костюм носит только один котик; повторное нажатие снимает', () => {
@@ -402,7 +429,7 @@ test('сюжет, костюмы и задания переживают пере
 
 test('сохранение 2-й версии получает пустой сюжет и задания', () => {
   const s = deserialize(JSON.stringify({ version: 2, gold: 5, stage: 12, maxStage: 12, slots: [3, 2, 0] }));
-  assert.deepEqual(s.story, { seen: [], choices: {} });
+  assert.deepEqual(s.story, { seen: [], choices: {}, trophyPaid: {}, endings: [] });
   assert.deepEqual(s.skins, []);
   assert.equal(s.quests.length, 3);
 });

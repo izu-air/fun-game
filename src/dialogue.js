@@ -2,7 +2,7 @@
 // Сцены ставятся в очередь; пока сцена открыта, игра на паузе (см. isDialogueOpen).
 import { SPEAKERS } from './story.js';
 import { CATS } from './config.js';
-import { drawGirlPortrait } from './girls.js';
+import { drawGirlPortrait, drawPuck } from './girls.js';
 import { drawCatPreview } from './render.js';
 
 const $ = (id) => document.getElementById(id);
@@ -137,6 +137,10 @@ function drawPortrait(who) {
   ctx.fillRect(0, 0, w, h);
   if (heroine) {
     drawGirlPortrait(ctx, heroine.key, w, h);
+    return;
+  }
+  if (who === 'puck') {
+    drawPuck(ctx, w / 2, h * 0.55, w * 0.22, 1);
     return;
   }
   const catIndex = CATS.findIndex((c) => c.key === who);

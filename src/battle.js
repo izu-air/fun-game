@@ -2,15 +2,18 @@
 // Не сохраняется — живёт только в сессии.
 import {
   ENEMIES_PER_STAGE, BOSS_TIME_LIMIT, CHAPTER_BOSS_TIME_LIMIT, MAX_ALIVE_ENEMIES, ENEMY, ENEMY_TYPES,
-  HERO, SKILLS, MARCH_SPEED, SPAWN_GAP, CRATE_GUN_CHANCE, KEYS, TAP, PET,
+  HERO, SKILLS, MARCH_SPEED, SPAWN_GAP, CRATE_GUN_CHANCE, KEYS, TAP, PET, BOSS_ABILITIES, ABILITY_FIRST,
+  STAR_CHEST, AUTO_BOSS_DELAY, MAX_GUN_TIER,
 } from './config.js';
 import {
   isBossStage, enemyHp, enemyDamage, enemyGold, pickEnemyType, formatNumber, buyTier, squadDps,
+  idleGoldPerSecond,
 } from './formulas.js';
 import {
-  statsOf, addGold, isSkillUnlocked, addGun, addKeys, allies, progressQuest,
+  statsOf, addGold, isSkillUnlocked, addGun, addKeys, allies, progressQuest, resolveMult, addResolve,
+  clearResolve,
 } from './state.js';
-import { heroineForStage, ALLY_BOSS_WEAKEN } from './story.js';
+import { heroineForStage, chapterForStage, CHAPTERS, ALLY_BOSS_WEAKEN, bookOf } from './story.js';
 
 export const WORLD = { width: 480, height: 340, groundY: 278 };
 // Позиции котиков в строю: первый слот впереди, остальные чуть дальше от зрителя.
@@ -24,20 +27,10 @@ const CAT_HEIGHT = 66; // для попадания пальцем по коти
 
 const BULLET_TURN_RATE = 9; // рад/с — пули доворачивают к цели, дробь сначала разлетается веером
 
-// Способности героинь-боссов: период (с) и длительность эффекта (с).
-const ABILITIES = {
-  heal: { every: 6, amount: 0.06 },
-  evade: { chance: 0.25 },
-  freeze: { every: 7, duration: 1.5 },
-  shield: { every: 6, duration: 2 },
-  summon: { every: 6, count: 2 },
-  empress: { shieldEvery: 7, shieldDuration: 2, summonEvery: 9, count: 2 },
-};
-
 export class Battle {
   constructor(state, events = {}) {
     this.state = state;
-    // { onStageStart, onStageFail, onBossKill, onGunDrop, onKey, onPet, sfx }
+    // { onStageStart, onStageFail, onBossKill, onGunDrop, onKey, onPet, onChest, onResolve, sfx }
     this.events = events;
     this.time = 0;
     this.scroll = 0;
@@ -45,6 +38,10 @@ export class Battle {
     this.shake = 0;
     this.freeze = 0; // отряд заморожен и не стреляет
     this.tapCd = 0;
+    this.combo = { count: 0, timer: 0 }; // серия ударов лапкой
+    this.chest = null; // летящий звёздный сундук
+    this.chestCd = this.nextChestDelay();
+    this.farmTimer = 0; // сколько секунд отряд фармит после провала босса
     this.buffs = { volley: 0, rage: 0 };
     this.cooldowns = Object.fromEntries(Object.keys(SKILLS).map((k) => [k, 0]));
     this.squad = statsOf(state);
@@ -115,7 +112,62 @@ export class Battle {
     this.state.stage += 1;
     this.state.maxStage = Math.max(this.state.maxStage, this.state.stage);
     this.hero.hp = this.squad.maxHp;
+    this.farmTimer = 0;
     this.startStage();
+  }
+
+  // ---------- Звёздный сундук ----------
+  nextChestDelay() {
+    const [a, b] = STAR_CHEST.every;
+    return a + Math.random() * (b - a);
+  }
+
+  updateChest(dt) {
+    if (!this.chest) {
+      this.chestCd -= dt;
+      if (this.chestCd <= 0 && this.state.maxStage >= 3) {
+        this.chest = { x: WORLD.width + 30, y: 45 + Math.random() * 50, t: 0 };
+        this.events.sfx?.('key');
+      }
+      return;
+    }
+    const c = this.chest;
+    c.t += dt;
+    c.x -= ((WORLD.width + 60) / STAR_CHEST.flightTime) * dt;
+    if (c.x < -30) {
+      this.chest = null;
+      this.chestCd = this.nextChestDelay();
+    }
+  }
+
+  // Награда: пушка (если есть место), ключ или золото за минуту фарма.
+  catchChest() {
+    const c = this.chest;
+    this.chest = null;
+    this.chestCd = this.nextChestDelay();
+    const s = this.state;
+    s.stats.chests++;
+    progressQuest(s, 'chests');
+    this.sparkles(c.x, c.y, 14);
+    const roll = Math.random();
+    let reward;
+    if (roll < STAR_CHEST.gunChance && s.guns.includes(0)) {
+      const tier = Math.min(MAX_GUN_TIER, buyTier(s.levels.forge ?? 0) + 1);
+      addGun(s, tier);
+      reward = { kind: 'gun', tier };
+    } else if (roll < STAR_CHEST.gunChance + STAR_CHEST.keyChance) {
+      addKeys(s, 1);
+      reward = { kind: 'key', amount: 1 };
+    } else {
+      const gold = idleGoldPerSecond(Math.max(1, s.stage), this.squad) * STAR_CHEST.goldSeconds;
+      addGold(s, gold);
+      reward = { kind: 'gold', amount: gold };
+    }
+    this.floatText(c.x, c.y + 20, reward.kind === 'gold' ? `+${formatNumber(reward.amount)} 🪙`
+      : reward.kind === 'key' ? '+1 🔑' : '🔫 Пушка!', '#fff3b0', 18);
+    this.events.sfx?.('jackpot');
+    this.events.onChest?.(reward);
+    return 'chest';
   }
 
   // ---------- Взаимодействия ----------
@@ -123,6 +175,7 @@ export class Battle {
   tap(x, y) {
     const cat = this.catAt(x, y);
     if (cat >= 0) return this.pet(cat) ? 'pet' : 'busy';
+    if (this.chest && Math.hypot(this.chest.x - x, this.chest.y - y) < 30) return this.catchChest();
     if (this.tapCd > 0) return null;
     this.tapCd = TAP.cooldown;
     this.paw(x, y);
@@ -132,9 +185,18 @@ export class Battle {
     }
     const enemy = this.enemyAt(x, y);
     if (!enemy) return 'miss';
-    const dmg = Math.max(1, squadDps(this.squad) * TAP.dpsShare);
-    this.state.stats.taps++;
-    progressQuest(this.state, 'taps');
+    const c = this.combo;
+    c.count = c.timer > 0 ? Math.min(TAP.comboMax, c.count + 1) : 1;
+    c.timer = TAP.comboWindow;
+    const comboMult = 1 + (c.count - 1) * TAP.comboStep;
+    // база удара — доля урона отряда, но не меньше половины выстрела: в начале игры лапка тоже ощутима
+    const base = Math.max(this.squad.damage * TAP.minShotShare, squadDps(this.squad) * TAP.dpsShare);
+    const dmg = base * comboMult * resolveMult(this.state);
+    const s = this.state;
+    s.stats.taps++;
+    s.stats.bestCombo = Math.max(s.stats.bestCombo, c.count);
+    progressQuest(s, 'taps');
+    progressQuest(s, 'combo', c.count);
     this.hit(enemy, dmg, false, this.squad, true);
     this.events.sfx?.('tap');
     return 'hit';
@@ -213,6 +275,13 @@ export class Battle {
     }
     this.freeze = Math.max(0, this.freeze - dt);
     this.tapCd = Math.max(0, this.tapCd - dt);
+    this.combo.timer = Math.max(0, this.combo.timer - dt);
+    if (this.combo.timer === 0) this.combo.count = 0;
+    this.updateChest(dt);
+    if (!this.state.autoAdvance && this.stageClearDelay <= 0) {
+      this.farmTimer += dt;
+      if (this.state.autoBoss && this.farmTimer >= AUTO_BOSS_DELAY) this.challengeBoss();
+    }
     if (this.state.autoSkills) this.autoCast(squad);
 
     this.hero.hp = Math.min(squad.maxHp, this.hero.hp + squad.regen * dt);
@@ -279,9 +348,9 @@ export class Battle {
     let hp = enemyHp(stage, type);
     const heroine = type === 'boss' ? heroineForStage(stage) : null;
     let helpers = [];
-    if (heroine?.ability === 'empress') {
-      // Пощажённые героини приходят на помощь и ослабляют Императрицу.
-      helpers = allies(this.state);
+    if (heroine && CHAPTERS[chapterForStage(stage)].final) {
+      // Пощажённые героини книги приходят на помощь и ослабляют финального босса.
+      helpers = allies(this.state, bookOf(chapterForStage(stage)));
       hp *= 1 - ALLY_BOSS_WEAKEN * helpers.length;
     }
     const e = {
@@ -308,8 +377,8 @@ export class Battle {
       lunge: 0,
       variant: Math.random(),
       shield: 0,
-      abilityCd: 3,
-      summonCd: 4,
+      timers: { ...ABILITY_FIRST },
+      enraged: false,
     };
     this.enemies.push(e);
     if (type === 'goldMouse') this.floatText(WORLD.width - 60, WORLD.groundY - 60, 'Золотая мышь!', '#ffd700', 16);
@@ -317,7 +386,7 @@ export class Battle {
       this.floatText(WORLD.width / 2, 60, `${heroine.name} — ${heroine.title}`, heroine.accent, 18);
       if (helpers.length) {
         this.floatText(WORLD.width / 2, 86, `На помощь пришли: ${helpers.map((h) => h.name).join(', ')}!`, '#ffd166', 13);
-        this.floatText(WORLD.width / 2, 106, `Сила Императрицы −${Math.round(ALLY_BOSS_WEAKEN * helpers.length * 100)}%`, '#ffd166', 13);
+        this.floatText(WORLD.width / 2, 106, `Сила: ${heroine.name} −${Math.round(ALLY_BOSS_WEAKEN * helpers.length * 100)}%`, '#ffd166', 13);
       }
     }
     return e;
@@ -326,7 +395,7 @@ export class Battle {
   updateShooting(dt, squad) {
     const target = this.nearestEnemy();
     const volley = this.buffs.volley > 0 ? SKILLS.volley.fireRateMult : 1;
-    const rage = this.buffs.rage > 0 ? SKILLS.rage.damageMult : 1;
+    const rage = (this.buffs.rage > 0 ? SKILLS.rage.damageMult : 1) * resolveMult(this.state);
     squad.cats.forEach((cat, i) => {
       const c = this.cats[i];
       c.fireCd -= dt;
@@ -410,7 +479,8 @@ export class Battle {
       this.floatText(enemy.x, enemy.y - enemy.height - 8, 'Щит!', '#7dd3fc', 13);
       return;
     }
-    if (!tap && ability === 'evade' && Math.random() < ABILITIES.evade.chance) {
+    const evade = ability && (enemy.heroine.evadeChance ?? BOSS_ABILITIES[ability].evade);
+    if (!tap && evade && Math.random() < evade) {
       this.floatText(enemy.x + 10, enemy.y - enemy.height - 8, 'Мимо!', '#e9d5ff', 13);
       return;
     }
@@ -459,6 +529,7 @@ export class Battle {
     if (enemy.isBoss) this.giveKeys(enemy, this.state.stage % 10 === 0 ? KEYS.bigBoss : KEYS.boss);
     if (enemy.runner && Math.random() < KEYS.goldMouseChance) this.giveKeys(enemy, 1);
     if (enemy.isBoss) {
+      clearResolve(s, s.stage);
       s.stats.bossKills++;
       progressQuest(s, 'bosses');
       this.shake = 12;
@@ -528,9 +599,10 @@ export class Battle {
 
       e.attackCd -= dt;
       if (e.attackCd <= 0) {
-        e.attackCd = ENEMY.attackInterval;
+        const oni = e.enraged ? BOSS_ABILITIES.oni.oni : null;
+        e.attackCd = ENEMY.attackInterval / (oni?.attackMult ?? 1);
         e.lunge = 1;
-        this.damageSquad(e.damage, e.isBoss ? 8 : 3);
+        this.damageSquad(e.damage * (oni?.damageMult ?? 1), e.isBoss ? 8 : 3);
       }
     }
   }
@@ -567,37 +639,57 @@ export class Battle {
   }
 
   updateAbility(e, dt) {
-    const ab = e.heroine.ability;
     if (e.x > WORLD.width) return; // способности — только когда героиня на экране
-    if (ab === 'heal' || ab === 'freeze' || ab === 'shield' || ab === 'summon') {
-      e.abilityCd -= dt;
-      if (e.abilityCd > 0) return;
-      const cfg = ABILITIES[ab];
-      e.abilityCd = cfg.every;
-      if (ab === 'heal') {
-        const heal = e.maxHp * cfg.amount;
+    const cfg = BOSS_ABILITIES[e.heroine.ability];
+    if (cfg.oni && !e.enraged && e.hp < e.maxHp * cfg.oni.below) {
+      e.enraged = true;
+      this.shake = 10;
+      this.floatText(e.x, e.y - e.height - 14, '👹 Ярость!', '#ff6b6b', 18);
+      this.burst(e.x, this.aimY(e), '#ff6b6b', 20, 160);
+    }
+    for (const kind of Object.keys(ABILITY_FIRST)) {
+      const c = cfg[kind];
+      if (!c) continue;
+      e.timers[kind] -= dt;
+      if (e.timers[kind] > 0) continue;
+      e.timers[kind] = c.every;
+      this.triggerAbility(e, kind, c);
+    }
+  }
+
+  triggerAbility(e, kind, c) {
+    const top = e.y - e.height - 12;
+    switch (kind) {
+      case 'heal': {
+        const heal = e.maxHp * c.amount;
         e.hp = Math.min(e.maxHp, e.hp + heal);
-        this.floatText(e.x, e.y - e.height - 12, '🌸 +' + formatNumber(heal), '#ff9ec7', 15);
+        this.floatText(e.x, top, '🌸 +' + formatNumber(heal), '#ff9ec7', 15);
         this.burst(e.x, this.aimY(e), '#ffc9de', 14, 120);
-      } else if (ab === 'freeze') {
-        this.freeze = cfg.duration;
+        break;
+      }
+      case 'freeze':
+        this.freeze = c.duration;
         this.floatText(SQUAD[1].x, WORLD.groundY - 100, '❄️ Лапы замёрзли!', '#a5d8ff', 15);
-      } else if (ab === 'shield') {
-        e.shield = cfg.duration;
-      } else {
-        this.summon(e, cfg.count);
-      }
-    } else if (ab === 'empress') {
-      const cfg = ABILITIES.empress;
-      e.abilityCd -= dt;
-      e.summonCd -= dt;
-      if (e.abilityCd <= 0) {
-        e.abilityCd = cfg.shieldEvery;
-        e.shield = cfg.shieldDuration;
-      }
-      if (e.summonCd <= 0) {
-        e.summonCd = cfg.summonEvery;
-        this.summon(e, cfg.count);
+        break;
+      case 'shield':
+        e.shield = c.duration;
+        break;
+      case 'summon':
+        this.summon(e, c.count);
+        break;
+      case 'volley':
+        // веер ветряных лезвий — каждое можно сбить лапкой
+        for (let k = 0; k < c.count; k++) {
+          this.orbs.push({ x: e.x - 16, y: this.aimY(e) - 30 + k * 22, speed: 200 + k * 25, damage: e.damage * c.damage, life: 4, wind: true });
+        }
+        this.floatText(e.x, top, '🌪 Ветер!', '#96f2d7', 15);
+        break;
+      case 'drain': {
+        const heal = e.maxHp * c.healPct;
+        e.hp = Math.min(e.maxHp, e.hp + heal);
+        this.damageSquad(this.squad.maxHp * c.squadPct, 4);
+        this.floatText(e.x, top, `✨ ${e.heroine.name} вытягивает силы`, e.heroine.accent, 13);
+        break;
       }
     }
   }
@@ -621,6 +713,11 @@ export class Battle {
 
   fail(message) {
     const s = this.state;
+    if (this.isBoss) {
+      const stacks = addResolve(s, s.stage);
+      this.events.onResolve?.(stacks);
+    }
+    this.farmTimer = 0;
     s.stage = Math.max(1, s.stage - 1);
     s.autoAdvance = false;
     this.squad = statsOf(s);

@@ -7,8 +7,25 @@ export const ENEMIES_PER_STAGE = 10;
 export const BOSS_EVERY = 5;
 export const BOSS_TIME_LIMIT = 30; // секунд
 export const CHAPTER_BOSS_TIME_LIMIT = 45; // героиня главы сильнее и со способностями — даём больше времени
+
+// Способности героинь-боссов глав собираются из «кирпичиков»: каждый срабатывает раз в every секунд.
+// first — задержка до первого срабатывания. Тексты способностей — в src/story.js (ABILITY_TEXT).
+export const BOSS_ABILITIES = {
+  heal:    { heal: { every: 6, amount: 0.06 } },
+  evade:   { evade: 0.25 },
+  freeze:  { freeze: { every: 7, duration: 1.5 } },
+  shield:  { shield: { every: 6, duration: 2 } },
+  summon:  { summon: { every: 6, count: 2 } },
+  empress: { shield: { every: 7, duration: 2 }, summon: { every: 9, count: 2 } },
+  volley:  { volley: { every: 4, count: 3, damage: 0.5 } },
+  oni:     { oni: { below: 0.5, attackMult: 2, damageMult: 1.5 } },
+  drain:   { drain: { every: 6, squadPct: 0.06, healPct: 0.04 } },
+  frost:   { freeze: { every: 8, duration: 1.5 }, shield: { every: 7, duration: 1.5 } },
+  witch:   { shield: { every: 7, duration: 2 }, summon: { every: 9, count: 2 }, drain: { every: 8, squadPct: 0.05, healPct: 0.03 } },
+};
+export const ABILITY_FIRST = { heal: 3, freeze: 3, shield: 3, summon: 4, volley: 2, drain: 4 };
 export const MAX_ALIVE_ENEMIES = 6;
-export const SPAWN_INTERVAL = 0.8; // минимальное время убийства цели (для оффлайн-оценки)
+export const SPAWN_INTERVAL = 0.8; // минимальное время на одну цель, даже при мгновенном убийстве
 export const MARCH_SPEED = 70; // скорость движения отряда, пикс/с
 export const SPAWN_GAP = [110, 170]; // расстояние между целями на пути, пикс
 
@@ -18,6 +35,8 @@ export const OFFLINE_MIN_SECONDS = 60;
 
 export const PRESTIGE_MIN_STAGE = 25;
 export const BONE_BONUS = 0.1; // +10% урона и золота за косточку
+// Косточки за перерождение: ((рекорд − 20) / 5)^exponent × growth^(рекорд − 25)
+export const BONES = { exponent: 1.6, growth: 1.04 };
 
 export const ENEMY = {
   baseHp: 6,
@@ -77,10 +96,19 @@ export const UPGRADES = {
 
 // ---------- Взаимодействия ----------
 export const TAP = {
-  dpsShare: 0.25, // удар лапкой = 25% урона отряда в секунду
-  cooldown: 0.08, // не чаще ~12 ударов в секунду
+  dpsShare: 0.12, // удар лапкой = 12% урона отряда в секунду (×комбо)
+  minShotShare: 0.5, // но не меньше половины выстрела стартового оружия
+  cooldown: 0.1, // не чаще 10 ударов в секунду
   radius: 70, // насколько близко к врагу нужно нажать
+  comboWindow: 1.2, // удары чаще этого интервала (с) наращивают комбо
+  comboStep: 0.03, // +3% урона лапкой за каждый удар в серии
+  comboMax: 30, // предел серии: ×1.9
 };
+// Звёздный сундук пролетает по небу; поймай пальцем — награда.
+export const STAR_CHEST = { every: [80, 140], flightTime: 7, goldSeconds: 60, keyChance: 0.3, gunChance: 0.3 };
+// Упорство: каждый проигрыш боссу даёт +10% урона против него (до +50%), сбрасывается после победы.
+export const RESOLVE = { perFail: 0.1, maxStacks: 5 };
+export const AUTO_BOSS_DELAY = 30; // через сколько секунд фарма отряд сам снова идёт на босса
 export const PET = {
   duration: 6, // сколько секунд котик доволен
   cooldown: 10, // как часто одного котика можно гладить
@@ -96,21 +124,31 @@ export const SKINS = {
   mecha:    { name: 'Мех-пилот',         from: 'Рин',     bonus: { maxHp: 0.25 },      desc: '+25% здоровья отряда' },
   kitsune:  { name: 'Кицунэ',            from: 'Микото',  bonus: { gold: 0.15 },       desc: '+15% золота' },
   moonlord: { name: 'Лунный владыка',    from: 'Луна',    bonus: { teamDamage: 0.15, critChance: 0.03 }, desc: '+15% урона и +3% крита' },
+  // Книга 2 — костюмы гостий из Лугуники (Re:Zero)
+  thief:     { name: 'Шарф воровки',            from: 'Фельт',   bonus: { gold: 0.12, critChance: 0.02 }, desc: '+12% золота и +2% крита' },
+  maidRam:   { name: 'Розовая лента горничной', from: 'Рам',     bonus: { fireRate: 0.06, gold: 0.06 }, desc: '+6% скорострельности и +6% золота' },
+  maidRem:   { name: 'Синий передник',          from: 'Рем',     bonus: { maxHp: 0.2, teamDamage: 0.05 }, desc: '+20% здоровья и +5% урона' },
+  librarian: { name: 'Бант хранительницы',      from: 'Беатрис', bonus: { critChance: 0.03, fireRate: 0.05 }, desc: '+3% крита и +5% скорострельности' },
+  iceSpirit: { name: 'Снежинка полуэльфийки',   from: 'Эмилия',  bonus: { teamDamage: 0.1, fireRate: 0.04 }, desc: '+10% урона и +4% скорострельности' },
+  witch:     { name: 'Брошь ведьмы жадности',   from: 'Эхидна',  bonus: { gold: 0.15, teamDamage: 0.08 }, desc: '+15% золота и +8% урона' },
   idol:     { name: 'Звезда сцены',      from: 'задания', bonus: { gold: 0.1, fireRate: 0.04 }, desc: '+10% золота и +4% скорострельности',
     questsNeeded: 8 },
 };
 
 // ---------- Задания ----------
 // base — цель первого задания; цели растут на 50% каждые 6 выполненных заданий.
+// minStage — задание выдаётся только после этого рекорда (золотые мыши с 4-го этапа, боссы с 5-го).
 export const QUEST_TYPES = {
   kills:     { base: 30, keys: 1, text: (n) => `Победи ${n} воительниц` },
   taps:      { base: 40, keys: 1, text: (n) => `Нанеси ${n} ударов лапкой` },
   obstacles: { base: 15, keys: 1, text: (n) => `Разрушь ${n} препятствий` },
   merges:    { base: 5,  keys: 1, text: (n) => `Слей ${n} пушек` },
   pets:      { base: 5,  keys: 1, text: (n) => `Погладь котиков ${n} раз` },
-  cases:     { base: 2,  keys: 2, text: (n) => `Открой ${n} кейса` },
-  bosses:    { base: 2,  keys: 2, text: (n) => `Победи ${n} боссов` },
-  goldMice:  { base: 1,  keys: 2, text: (n) => `Поймай золотую мышь: ${n}` },
+  combo:     { base: 15, keys: 1, text: (n) => `Набери комбо лапкой ×${n}`, record: true },
+  cases:     { base: 2,  keys: 2, text: (n) => `Открой ${n} кейса`, minStage: 3 },
+  chests:    { base: 1,  keys: 2, text: (n) => `Поймай звёздный сундук: ${n}`, minStage: 3 },
+  bosses:    { base: 2,  keys: 2, text: (n) => `Победи ${n} боссов`, minStage: 5 },
+  goldMice:  { base: 1,  keys: 2, text: (n) => `Поймай золотую мышь: ${n}`, minStage: 6 },
 };
 export const ACTIVE_QUESTS = 3;
 export const QUEST_GOLD_SECONDS = 45; // золото в награду = столько секунд дохода

@@ -565,6 +565,25 @@ button {
 .chapter .ch-sub { font-size: 11px; color: var(--muted); line-height: 1.3; }
 .chapter .ch-status { font-size: 11px; font-weight: 700; }
 .chapter.locked { opacity: 0.55; }
+.ch-actions { display: flex; flex-direction: column; gap: 4px; }
+.book-title { margin: 10px 2px 2px; font-size: 13px; color: var(--gold); text-transform: uppercase; letter-spacing: 0.04em; }
+.book-title small { text-transform: none; letter-spacing: 0; color: var(--muted); font-weight: 600; }
+.ending-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.ending {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-align: center;
+  min-width: 0;
+}
+.ending b { font-size: 12px; }
+.ending small { font-size: 10px; color: var(--muted); line-height: 1.25; }
+.ending-icon { font-size: 24px; }
+.ending.locked { opacity: 0.6; }
 .chapter button {
   padding: 6px 10px;
   border-radius: 9px;
@@ -642,6 +661,20 @@ button {
   width: 100%;
   background: var(--panel-2);
 }
+
+/* ---------- Настройки ---------- */
+.setting {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  cursor: pointer;
+}
+.setting input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--accent); flex: 0 0 auto; }
+.setting span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.setting small { color: var(--muted); font-size: 12px; line-height: 1.35; }
 
 /* ---------- Статистика ---------- */
 .stats {

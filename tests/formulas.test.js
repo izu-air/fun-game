@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import {
   enemyHp, enemyGold, upgradeCost, bulkPurchase, heroStats, expectedDps, bonesForPrestige,
   formatNumber, formatDuration, isBossStage, pickEnemyType, biomeFor, isMaxed,
-  gunInfo, gunCost, buyTier, squadStats, squadDps,
+  gunInfo, gunCost, buyTier, squadStats, squadDps, idleGoldPerSecond, poolAverage, WALK_TIME, bossDpsFactor, bossDamageFactor,
 } from '../src/formulas.js';
+import { HEROINES } from '../src/story.js';
 import { UPGRADES, BIOMES, MAX_GUN_TIER, CATS } from '../src/config.js';
 
 test('HP и золото врагов растут с этапом', () => {
@@ -158,4 +159,30 @@ test('дробовик стреляет дробью, снайперка про�
   assert.equal(shotgun.pellets, 3);
   const sniper = squadStats({}, 0, [21, 0, 0]).cats[0];
   assert.equal(sniper.pierce, 1);
+});
+
+test('косточки растут быстрее, чем степенная функция: перерождения не упираются в стену', () => {
+  // каждые 10 этапов косточек должно становиться больше, чем раньше, в сравнимой пропорции
+  const ratio = (s) => bonesForPrestige(s + 10) / bonesForPrestige(s);
+  assert.ok(ratio(60) > 1.5);
+  assert.ok(ratio(100) > 1.5, 'и на поздних этапах тоже');
+});
+
+test('оффлайн-доход не быстрее, чем отряд успевает дойти до целей', () => {
+  // даже бесконечно сильный отряд тратит время на ходьбу
+  const strong = squadStats({ damage: 2000 }, 0, [30, 30, 30], 100);
+  const gps = idleGoldPerSecond(11, strong);
+  const perTarget = enemyGold(11) * poolAverage(11, 'gold') * strong.goldMult;
+  assert.ok(Math.abs(gps - perTarget / WALK_TIME) < 1e-6 * gps);
+  assert.ok(WALK_TIME > 1.5);
+});
+
+test('способности героинь мешают отряду: снижают урон по ним или бьют сильнее', () => {
+  for (const h of HEROINES) {
+    const f = bossDpsFactor(h);
+    assert.ok(f > 0.3 && f <= 1, `${h.name}: ${f}`);
+    assert.ok(f < 1 || bossDamageFactor(h) > 1, `${h.name}: способность ни на что не влияет`);
+  }
+  assert.equal(bossDpsFactor(null), 1);
+  assert.ok(bossDpsFactor(HEROINES.find((h) => h.key === 'felt')) < bossDpsFactor(HEROINES.find((h) => h.key === 'ayame')));
 });

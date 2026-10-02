@@ -1,10 +1,12 @@
 // Сохраняемое состояние игрока: прокачка, этапы, перерождение, оффлайн-доход.
 import {
   UPGRADES, SKILLS, SAVE_KEY, SAVE_VERSION, OFFLINE_MAX_SECONDS, OFFLINE_EFFICIENCY,
-  OFFLINE_MIN_SECONDS, SPAWN_INTERVAL, INVENTORY_SIZE, CATS, MAX_GUN_TIER, CASES, KEYS,
-  JACKPOT_BONUS, GAME_SPEEDS, SPEED_UNLOCK, SKINS, QUEST_TYPES, ACTIVE_QUESTS,
+  OFFLINE_MIN_SECONDS, INVENTORY_SIZE, CATS, MAX_GUN_TIER, CASES, KEYS,
+  JACKPOT_BONUS, GAME_SPEEDS, SPEED_UNLOCK, SKINS, QUEST_TYPES, ACTIVE_QUESTS, RESOLVE,
 } from './config.js';
-import { CHAPTERS, HEROINES, TROPHY_KEYS } from './story.js';
+import {
+  CHAPTERS, HEROINES, TROPHY_KEYS, BOOKS, bookOf, ENDINGS, ENDING_KEYS, endingId,
+} from './story.js';
 import { initialQuests, newQuest, progressQuest } from './quests.js';
 import {
   upgradeCost, isMaxed, bulkPurchase, squadStats, bonesForPrestige, idleGoldPerSecond,
@@ -30,12 +32,16 @@ export function createState() {
     pity: 0, // обычных кейсов подряд без крупного выигрыша
     speed: 1,
     sound: true,
-    story: { seen: [], choices: {} }, // просмотренные сцены и выборы в главах ('spare' | 'trophy')
+    // просмотренные сцены, выборы в главах ('spare' | 'trophy'), главы, где ключи за трофей уже выданы,
+    // и открытые концовки (альбом)
+    story: { seen: [], choices: {}, trophyPaid: {}, endings: [] },
     skins: [], // полученные аниме-скины
     catSkins: CATS.map(() => null), // какой скин надет на каждого котика
     quests: initialQuests(),
     questsDone: 0,
-    stats: { kills: 0, bossKills: 0, prestiges: 0, totalGold: 0, playTime: 0, merges: 0, bestGun: 1, casesOpened: 0, jackpots: 0, taps: 0, pets: 0, goldMice: 0 },
+    autoBoss: true, // после провала отряд сам снова идёт на босса через AUTO_BOSS_DELAY секунд
+    resolve: { stage: 0, stacks: 0 }, // упорство против босса этого этапа
+    stats: { kills: 0, bossKills: 0, prestiges: 0, totalGold: 0, playTime: 0, merges: 0, bestGun: 1, casesOpened: 0, jackpots: 0, taps: 0, pets: 0, goldMice: 0, chests: 0, bestCombo: 0 },
     lastSeen: Date.now(),
   };
 }
@@ -49,20 +55,67 @@ export function markSeen(state, id) {
   if (!hasSeen(state, id)) state.story.seen.push(id);
 }
 
-export const sparedCount = (state) => Object.values(state.story.choices).filter((c) => c === 'spare').length;
+const bookChapters = (book) => Array.from({ length: 6 }, (_, i) => BOOKS[book].first + i);
 
-// Союзницы финала: пощажённые героини первых пяти глав.
-export const allies = (state) => HEROINES.slice(0, CHAPTERS.length - 1).filter((_, i) => state.story.choices[i] === 'spare');
+// Сколько героинь пощажено — в одной книге или во всех.
+export function sparedCount(state, book = null) {
+  const chapters = book === null ? CHAPTERS.map((_, i) => i) : bookChapters(book);
+  return chapters.filter((ch) => state.story.choices[ch] === 'spare').length;
+}
 
-// Выбор после победы над героиней главы: скин в любом случае, за трофей — ещё и ключи сразу.
+// Союзницы финала книги: пощажённые героини пяти первых глав этой книги.
+export function allies(state, book) {
+  return bookChapters(book).slice(0, 5).filter((ch) => state.story.choices[ch] === 'spare').map((ch) => HEROINES[ch]);
+}
+
+export const isBookFinished = (state, book) => !!state.story.choices[BOOKS[book].first + 5];
+
+// Решение после победы над героиней главы. Его можно переиграть во вкладке «Сюжет»:
+// костюм выдаётся при первом решении, ключи за трофей — только один раз на главу.
+// Возвращает { skin, keys, changed } — skin и keys только если выданы сейчас.
 export function chooseChapter(state, chapter, choice) {
-  if (state.story.choices[chapter]) return null;
+  if (choice !== 'spare' && choice !== 'trophy') return null;
+  const previous = state.story.choices[chapter] ?? null;
   state.story.choices[chapter] = choice;
-  const skin = HEROINES[chapter].skin;
-  grantSkin(state, skin);
-  const keys = choice === 'trophy' ? TROPHY_KEYS : 0;
-  state.keys += keys;
-  return { skin, keys };
+  const skin = grantSkin(state, HEROINES[chapter].skin) ? HEROINES[chapter].skin : null;
+  let keys = 0;
+  if (choice === 'trophy' && !state.story.trophyPaid[chapter]) {
+    state.story.trophyPaid[chapter] = true;
+    keys = TROPHY_KEYS;
+    state.keys += keys;
+  }
+  return { skin, keys, changed: previous !== null && previous !== choice };
+}
+
+// Открыть концовку книги в альбоме. Впервые увиденная концовка приносит ключи.
+// Возвращает { id, kind, isNew, keys }.
+export function unlockEnding(state, book) {
+  const kind = ENDINGS[book] && (sparedCount(state, book) >= 5 ? 'good' : sparedCount(state, book) >= 2 ? 'mid' : 'bad');
+  const id = endingId(book, kind);
+  const isNew = !state.story.endings.includes(id);
+  if (isNew) {
+    state.story.endings.push(id);
+    state.keys += ENDING_KEYS;
+  }
+  return { id, kind, isNew, keys: isNew ? ENDING_KEYS : 0 };
+}
+
+export { bookOf };
+
+// ---------- Упорство ----------
+// Множитель урона против босса текущего этапа: растёт с каждым проигрышем ему.
+export function resolveMult(state) {
+  return state.resolve.stage === state.stage ? 1 + state.resolve.stacks * RESOLVE.perFail : 1;
+}
+
+export function addResolve(state, stage) {
+  const stacks = state.resolve.stage === stage ? state.resolve.stacks : 0;
+  state.resolve = { stage, stacks: Math.min(RESOLVE.maxStacks, stacks + 1) };
+  return state.resolve.stacks;
+}
+
+export function clearResolve(state, stage) {
+  if (state.resolve.stage === stage) state.resolve = { stage: 0, stacks: 0 };
 }
 
 // ---------- Скины ----------
@@ -269,6 +322,7 @@ export function prestige(state) {
     catSkins: state.catSkins,
     quests: state.quests,
     questsDone: state.questsDone,
+    autoBoss: state.autoBoss,
     stats: { ...state.stats, prestiges: state.stats.prestiges + 1 },
   });
   return gained;
@@ -279,7 +333,7 @@ export function applyOffline(state, now = Date.now()) {
   const elapsed = Math.min((now - state.lastSeen) / 1000, OFFLINE_MAX_SECONDS);
   state.lastSeen = now;
   if (!(elapsed >= OFFLINE_MIN_SECONDS)) return null;
-  const gold = idleGoldPerSecond(state.stage, statsOf(state), SPAWN_INTERVAL) * elapsed * OFFLINE_EFFICIENCY;
+  const gold = idleGoldPerSecond(state.stage, statsOf(state)) * elapsed * OFFLINE_EFFICIENCY;
   addGold(state, gold);
   return { seconds: elapsed, gold };
 }
@@ -307,6 +361,7 @@ export function deserialize(json) {
     stage: Math.max(1, Math.floor(num(data.stage, 1))),
     autoAdvance: data.autoAdvance !== false,
     autoSkills: data.autoSkills === true,
+    autoBoss: data.autoBoss !== false,
     sound: data.sound !== false,
     gunsBought: Math.floor(num(data.gunsBought, 0)),
     keys: Math.floor(num(data.keys, KEYS.start)),
@@ -339,6 +394,17 @@ export function deserialize(json) {
   for (const [ch, choice] of Object.entries(data.story?.choices ?? {})) {
     if (CHAPTERS[ch] && (choice === 'spare' || choice === 'trophy')) state.story.choices[ch] = choice;
   }
+  for (const ch of Object.keys(CHAPTERS)) {
+    // в версиях до переигровки трофей нельзя было взять дважды — значит, ключи за него уже выданы
+    if (data.story?.trophyPaid?.[ch] === true || state.story.choices[ch] === 'trophy') state.story.trophyPaid[ch] = true;
+  }
+  const endingIds = new Set(ENDINGS.flatMap((e, b) => Object.keys(e).map((kind) => endingId(b, kind))));
+  state.story.endings = [...new Set(strings(data.story?.endings).filter((id) => endingIds.has(id)))];
+  // концовка книги 1 из версии без альбома: засчитываем ту, что была показана
+  if (state.story.seen.includes('ending') && !state.story.endings.some((id) => id.startsWith('b1-'))) {
+    const n = sparedCount(state, 0);
+    state.story.endings.push(endingId(0, n >= 5 ? 'good' : n >= 2 ? 'mid' : 'bad'));
+  }
   state.skins = [...new Set(strings(data.skins).filter((k) => SKINS[k]))];
   if (Array.isArray(data.catSkins)) {
     state.catSkins = state.catSkins.map((_, i) => {
@@ -347,6 +413,12 @@ export function deserialize(json) {
     });
   }
   state.questsDone = Math.floor(num(data.questsDone, 0));
+  if (data.resolve && CHAPTERS && Number.isFinite(data.resolve.stage)) {
+    state.resolve = {
+      stage: Math.floor(num(data.resolve.stage, 0)),
+      stacks: Math.min(RESOLVE.maxStacks, Math.floor(num(data.resolve.stacks, 0))),
+    };
+  }
   if (Array.isArray(data.quests) && data.quests.length === ACTIVE_QUESTS
     && data.quests.every((q) => QUEST_TYPES[q?.type])
     && new Set(data.quests.map((q) => q.type)).size === ACTIVE_QUESTS) {

@@ -2,7 +2,7 @@
 import {
   ENEMY, ENEMY_TYPES, HERO, UPGRADES, BOSS_EVERY, BONE_BONUS,
   PRESTIGE_MIN_STAGE, BIOMES, STAGES_PER_BIOME, GUN_FAMILIES, RARITIES, MAX_GUN_TIER,
-  GUN_TIER_POWER, GUN_COST, CATS, CASES, SKINS,
+  GUN_TIER_POWER, GUN_COST, CATS, CASES, SKINS, BOSS_ABILITIES, MARCH_SPEED, SPAWN_GAP, SPAWN_INTERVAL, BONES,
 } from './config.js';
 
 export const isBossStage = (stage) => stage % BOSS_EVERY === 0;
@@ -167,19 +167,58 @@ export function squadDps(squad, damageMult = 1, fireRateMult = 1) {
   return squad.cats.reduce((sum, c) => (c ? sum + expectedDps(c, damageMult, fireRateMult) * c.pellets : sum), 0);
 }
 
+// Во сколько раз способности героини снижают урон отряда по ней (для симуляции баланса и подсказок).
+// Щит и заморозка выключают урон на долю времени, уворот — на долю пуль, лечение и вытягивание
+// отматывают часть урона назад, призванные ниндзя отвлекают на себя пули.
+export function bossDpsFactor(heroine) {
+  if (!heroine) return 1;
+  const cfg = BOSS_ABILITIES[heroine.ability];
+  let f = 1;
+  if (cfg.evade) f *= 1 - (heroine.evadeChance ?? cfg.evade);
+  if (cfg.shield) f *= 1 - cfg.shield.duration / cfg.shield.every;
+  if (cfg.freeze) f *= 1 - cfg.freeze.duration / cfg.freeze.every;
+  if (cfg.heal) f *= 1 - cfg.heal.amount * 2; // ~2 срабатывания за типичный бой
+  if (cfg.drain) f *= 1 - cfg.drain.healPct * 2;
+  if (cfg.summon) f *= 0.85;
+  return f;
+}
+
+// Во сколько раз способности героини увеличивают урон по отряду (ярость, лезвия ветра, вытягивание).
+export function bossDamageFactor(heroine) {
+  if (!heroine) return 1;
+  const cfg = BOSS_ABILITIES[heroine.ability];
+  let f = 1;
+  if (cfg.oni) f *= 1 + (cfg.oni.attackMult * cfg.oni.damageMult - 1) * (1 - cfg.oni.below); // ярость на второй половине боя
+  if (cfg.volley) f *= 1 + cfg.volley.count * cfg.volley.damage / cfg.volley.every; // лезвия, которые не сбили
+  if (cfg.drain) f *= 1.15;
+  return f;
+}
+
 // ---------- Перерождение ----------
 export function bonesForPrestige(maxStage) {
   if (maxStage < PRESTIGE_MIN_STAGE) return 0;
-  return Math.floor(((maxStage - 20) / 5) ** 1.6);
+  // степенной рост + экспоненциальный: иначе здоровье врагов (×1.26 за этап) обгоняет перерождения
+  return Math.floor(((maxStage - 20) / 5) ** BONES.exponent * BONES.growth ** (maxStage - PRESTIGE_MIN_STAGE));
 }
 
 // ---------- Оффлайн-доход ----------
-// Приблизительное золото в секунду при фарме обычного этапа.
-export function idleGoldPerSecond(stage, squad, spawnInterval) {
+// Сколько секунд отряд в среднем идёт до следующей цели.
+export const WALK_TIME = (SPAWN_GAP[0] + SPAWN_GAP[1]) / 2 / MARCH_SPEED;
+
+// Средний множитель поля (hp / gold) по всем целям, которые встречаются на этапе.
+export function poolAverage(stage, field) {
+  const pool = Object.values(ENEMY_TYPES).filter((t) => t.weight > 0 && (t.minStage ?? 1) <= stage);
+  const total = pool.reduce((s, t) => s + t.weight, 0);
+  return pool.reduce((s, t) => s + t.weight * t[field], 0) / total;
+}
+
+// Приблизительное золото в секунду при фарме обычного этапа (для оффлайн-дохода и наград).
+// Время на цель — не меньше времени ходьбы до неё: так в начале игры доход не завышается.
+export function idleGoldPerSecond(stage, squad) {
   const farmStage = isBossStage(stage) ? Math.max(1, stage - 1) : stage;
   const dps = Math.max(squadDps(squad), 1e-9);
-  const killTime = Math.max(enemyHp(farmStage) / dps, spawnInterval);
-  return (enemyGold(farmStage) * squad.goldMult) / killTime;
+  const perTarget = Math.max((enemyHp(farmStage) * poolAverage(farmStage, 'hp')) / dps, WALK_TIME, SPAWN_INTERVAL);
+  return (enemyGold(farmStage) * poolAverage(farmStage, 'gold') * squad.goldMult) / perTarget;
 }
 
 // ---------- Форматирование чисел ----------

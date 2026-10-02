@@ -1,24 +1,26 @@
 // Задания: три активных одновременно, за выполнение — ключи и золото.
 // Чистые функции над состоянием — без DOM, тестируются в Node.
-import { QUEST_TYPES, ACTIVE_QUESTS, SKINS } from './config.js';
+import { QUEST_TYPES, ACTIVE_QUESTS, SKINS, TAP } from './config.js';
 
 export function questTarget(type, done) {
-  return Math.ceil(QUEST_TYPES[type].base * (1 + Math.floor(done / 6) * 0.5));
+  const target = Math.ceil(QUEST_TYPES[type].base * (1 + Math.floor(done / 6) * 0.5));
+  // рекордные задания (комбо) не должны требовать больше, чем вообще возможно
+  return QUEST_TYPES[type].record ? Math.min(target, TAP.comboMax) : target;
 }
 
 export function newQuest(type, done) {
   return { type, target: questTarget(type, done), progress: 0 };
 }
 
-// Случайный тип задания, которого сейчас нет среди активных.
-function pickType(active, rand) {
-  const free = Object.keys(QUEST_TYPES).filter((t) => !active.includes(t));
+// Случайный тип задания, доступный на этом рекорде этапа и которого сейчас нет среди активных.
+function pickType(active, rand, maxStage) {
+  const free = Object.keys(QUEST_TYPES).filter((t) => !active.includes(t) && (QUEST_TYPES[t].minStage ?? 1) <= maxStage);
   return free[Math.floor(rand() * free.length)];
 }
 
-export function initialQuests(rand = Math.random) {
+export function initialQuests(rand = Math.random, maxStage = 1) {
   const quests = [];
-  while (quests.length < ACTIVE_QUESTS) quests.push(newQuest(pickType(quests.map((q) => q.type), rand), 0));
+  while (quests.length < ACTIVE_QUESTS) quests.push(newQuest(pickType(quests.map((q) => q.type), rand, maxStage), 0));
   return quests;
 }
 
@@ -26,9 +28,12 @@ export const questText = (q) => QUEST_TYPES[q.type].text(q.target);
 export const isQuestDone = (q) => q.progress >= q.target;
 
 // Засчитать прогресс по всем активным заданиям этого типа.
+// У рекордных заданий (комбо) n — достигнутое значение, а не прибавка.
 export function progressQuest(state, type, n = 1) {
+  const record = QUEST_TYPES[type]?.record;
   for (const q of state.quests) {
-    if (q.type === type && q.progress < q.target) q.progress = Math.min(q.target, q.progress + n);
+    if (q.type !== type || q.progress >= q.target) continue;
+    q.progress = Math.min(q.target, record ? Math.max(q.progress, n) : q.progress + n);
   }
 }
 
@@ -50,6 +55,6 @@ export function claimQuest(state, index, goldReward, rand = Math.random) {
     }
   }
   const others = state.quests.filter((_, i) => i !== index).map((x) => x.type);
-  state.quests[index] = newQuest(pickType([...others, q.type], rand), state.questsDone);
+  state.quests[index] = newQuest(pickType([...others, q.type], rand, state.maxStage), state.questsDone);
   return { keys, gold: goldReward, skin };
 }
