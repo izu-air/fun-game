@@ -2,6 +2,7 @@
 import { WORLD, SQUAD } from './battle.js';
 import { biomeFor } from './formulas.js';
 import { CATS } from './config.js';
+import { drawGirl, lookFor } from './girls.js';
 
 const TAU = Math.PI * 2;
 
@@ -29,8 +30,13 @@ export function render(ctx, battle, time) {
   drawBackground(ctx, biome, battle.scroll, time);
   // сначала дальние препятствия, затем враги поверх
   const sorted = [...battle.enemies].sort((a, b) => (a.obstacle === b.obstacle ? b.x - a.x : a.obstacle ? -1 : 1));
-  for (const e of sorted) (e.obstacle ? drawObstacle : drawEnemy)(ctx, e, time, biome);
+  for (const e of sorted) {
+    if (e.obstacle) drawObstacle(ctx, e, time, biome);
+    else if (e.girl) drawGirlEnemy(ctx, e, time, battle);
+    else drawEnemy(ctx, e, time);
+  }
   drawSquad(ctx, battle, time);
+  drawOrbs(ctx, battle.orbs, time);
   drawBullets(ctx, battle.bullets);
   drawParticles(ctx, battle.particles);
   drawTexts(ctx, battle.texts);
@@ -38,6 +44,10 @@ export function render(ctx, battle, time) {
 
   if (battle.buffs.rage > 0) {
     ctx.fillStyle = `rgba(255, 60, 60, ${0.08 + Math.sin(time * 8) * 0.04})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+  if (battle.freeze > 0) {
+    ctx.fillStyle = `rgba(165, 216, 255, ${Math.min(0.35, battle.freeze * 0.3)})`;
     ctx.fillRect(0, 0, W, H);
   }
   if (battle.hero.hurt > 0) {
@@ -274,14 +284,25 @@ function drawSquad(ctx, battle, time) {
   for (let i = SQUAD.length - 1; i >= 0; i--) {
     const cat = squad.cats[i];
     if (!cat) continue;
-    drawCat(ctx, SQUAD[i], CATS[i], cat.gun, battle.cats[i], battle, time + i * 0.7);
+    drawCat(ctx, SQUAD[i], CATS[i], cat.gun, battle.cats[i], battle, time + i * 0.7, battle.state.catSkins[i]);
   }
   const front = squad.cats.findIndex(Boolean);
   const x = SQUAD[Math.max(0, front)].x;
   bar(ctx, x - 30, WORLD.groundY + 12, 60, 7, battle.hero.hp / squad.maxHp, '#4ade80', '#14532d');
 }
 
-function drawCat(ctx, pos, def, gun, cs, battle, time) {
+// Котик для витрины гардероба и портретов диалогов: без боя, с выбранным скином.
+// time по умолчанию 1 — чтобы котик на витрине не моргал.
+export function drawCatPreview(ctx, catIndex, skin, w, h, time = 1, gun = null) {
+  const scale = h / 82;
+  const fake = { walking: false, buffs: { rage: 0, volley: 0 }, hero: { hurt: 0 }, freeze: 0 };
+  ctx.save();
+  drawCat(ctx, { x: w * 0.42 / scale, y: 0, scale: 1, base: (h - 6) / scale }, CATS[catIndex], gun,
+    { aim: 0, recoil: 0, happy: 0 }, fake, time, skin, scale);
+  ctx.restore();
+}
+
+function drawCat(ctx, pos, def, gun, cs, battle, time, skin = null, outerScale = 1) {
   const walking = battle.walking;
   const bob = walking ? Math.abs(Math.sin(time * 9)) * -3 : Math.sin(time * 4) * 1.5;
   const rage = battle.buffs.rage > 0;
@@ -289,13 +310,16 @@ function drawCat(ctx, pos, def, gun, cs, battle, time) {
   const furDark = rage ? '#d9483b' : def.furDark;
 
   ctx.save();
-  ctx.translate(pos.x, WORLD.groundY + pos.y);
+  if (outerScale !== 1) ctx.scale(outerScale, outerScale);
+  ctx.translate(pos.x, (pos.base ?? WORLD.groundY) + pos.y);
   ctx.scale(pos.scale, pos.scale);
 
   ctx.fillStyle = 'rgba(0,0,0,0.2)';
   ctx.beginPath();
   ctx.ellipse(0, 2, 26, 5, 0, 0, TAU);
   ctx.fill();
+
+  drawSkinBack(ctx, skin, time, fur);
 
   // хвост
   ctx.strokeStyle = furDark;
@@ -377,11 +401,26 @@ function drawCat(ctx, pos, def, gun, cs, battle, time) {
     ctx.lineTo(hx - 9, hy + dy - 2);
   }
   ctx.stroke();
-  ctx.fillStyle = def.band;
-  ctx.fillRect(hx - 16, hy - 12, 32, 5);
-  tri(ctx, hx - 16, hy - 12, hx - 25, hy - 16 + Math.sin(time * 6) * 2, hx - 23, hy - 6);
+  if (!SKIN_HIDES_BAND.has(skin)) {
+    ctx.fillStyle = def.band;
+    ctx.fillRect(hx - 16, hy - 12, 32, 5);
+    tri(ctx, hx - 16, hy - 12, hx - 25, hy - 16 + Math.sin(time * 6) * 2, hx - 23, hy - 6);
+  }
+  drawSkinHead(ctx, skin, hx, hy, time);
+  if (cs.happy > 0) {
+    ctx.fillStyle = '#ff6b9d';
+    heart(ctx, hx + 20, hy - 22 + Math.sin(time * 5) * 2, 5);
+  }
+  if (battle.freeze > 0) {
+    ctx.fillStyle = 'rgba(200, 235, 255, 0.55)';
+    roundRect(ctx, -22, -64, 50, 66, 10);
+  }
 
   // оружие
+  if (!gun) {
+    ctx.restore();
+    return;
+  }
   ctx.save();
   ctx.translate(30, -32 - bob);
   ctx.rotate(Math.max(-0.6, Math.min(0.4, cs.aim)));
@@ -398,17 +437,194 @@ function drawCat(ctx, pos, def, gun, cs, battle, time) {
   ctx.restore();
 }
 
-// ---------- Враги ----------
-const ENEMY_STYLE = {
-  mouse: { body: '#a8a8b3', dark: '#7d7d8a', ear: '#ffc2d1' },
-  goldMouse: { body: '#ffd34d', dark: '#d9a300', ear: '#fff0a8' },
-  rat:   { body: '#8b6b52', dark: '#6b4f3a', ear: '#e7a4a4' },
-  dog:   { body: '#d6a76b', dark: '#a77b45', ear: '#8a5a2b' },
-  boss:  { body: '#7b4fa0', dark: '#55357a', ear: '#3d2257' },
-};
+// ---------- Аниме-скины котиков ----------
+const SKIN_HIDES_BAND = new Set(['samurai', 'snowmage', 'mecha', 'moonlord']);
 
+// Детали за спиной: плащи и дополнительные хвосты.
+function drawSkinBack(ctx, skin, time, fur) {
+  const flutter = Math.sin(time * 4) * 3;
+  switch (skin) {
+    case 'snowmage':
+    case 'moonlord':
+      ctx.fillStyle = skin === 'snowmage' ? '#e7f5ff' : '#5f3dc4';
+      ctx.beginPath();
+      ctx.moveTo(-6, -34);
+      ctx.lineTo(10, -34);
+      ctx.lineTo(-24 + flutter, 0);
+      ctx.lineTo(-34 + flutter, -4);
+      ctx.closePath();
+      ctx.fill();
+      if (skin === 'moonlord') {
+        ctx.fillStyle = '#ffd43b';
+        ctx.fillRect(-6, -36, 16, 3);
+      }
+      break;
+    case 'kitsune':
+      for (let k = 0; k < 2; k++) {
+        ctx.strokeStyle = fur;
+        ctx.lineWidth = 8;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(-14, -14);
+        ctx.quadraticCurveTo(-34 - k * 6, -8 - k * 10 + flutter, -40 - k * 4, -30 - k * 10);
+        ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        circle(ctx, -40 - k * 4, -30 - k * 10, 5);
+      }
+      break;
+    case 'kunoichi':
+      ctx.fillStyle = '#5f3dc4';
+      ctx.beginPath();
+      ctx.moveTo(0, -40);
+      ctx.quadraticCurveTo(-24, -40 + flutter, -38, -30 + flutter * 1.5);
+      ctx.lineTo(-36, -24 + flutter);
+      ctx.quadraticCurveTo(-20, -32, 0, -34);
+      ctx.fill();
+      break;
+  }
+}
+
+// Головные уборы и маски поверх головы котика (голова в точке hx, hy, радиус 17).
+function drawSkinHead(ctx, skin, hx, hy, time) {
+  switch (skin) {
+    case 'samurai':
+      ctx.fillStyle = '#9b2226';
+      ctx.beginPath();
+      ctx.arc(hx, hy - 4, 18, Math.PI, TAU);
+      ctx.fill();
+      ctx.fillRect(hx - 21, hy - 6, 42, 5);
+      ctx.fillStyle = '#ffd166';
+      ctx.beginPath();
+      ctx.arc(hx, hy - 22, 11, Math.PI * 1.1, Math.PI * 1.9);
+      ctx.lineTo(hx, hy - 18);
+      ctx.fill();
+      ctx.fillStyle = '#ff9ec7';
+      circle(ctx, hx - 10, hy - 14, 2.5);
+      break;
+    case 'kunoichi':
+      ctx.fillStyle = '#5f3dc4';
+      ctx.fillRect(hx - 17, hy - 13, 34, 5);
+      ctx.fillStyle = '#3b2a6b';
+      ctx.beginPath();
+      ctx.moveTo(hx - 15, hy + 3);
+      ctx.lineTo(hx + 18, hy + 3);
+      ctx.quadraticCurveTo(hx + 14, hy + 16, hx + 2, hy + 16);
+      ctx.quadraticCurveTo(hx - 12, hy + 15, hx - 15, hy + 3);
+      ctx.fill();
+      break;
+    case 'snowmage':
+      ctx.fillStyle = '#a5d8ff';
+      ctx.beginPath();
+      ctx.ellipse(hx, hy - 12, 24, 5, 0, 0, TAU);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(hx - 13, hy - 13);
+      ctx.lineTo(hx + 13, hy - 13);
+      ctx.lineTo(hx - 6 + Math.sin(time * 2) * 2, hy - 42);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * Math.PI;
+        ctx.beginPath();
+        ctx.moveTo(hx - Math.cos(a) * 4, hy - 22 - Math.sin(a) * 4);
+        ctx.lineTo(hx + Math.cos(a) * 4, hy - 22 + Math.sin(a) * 4);
+        ctx.stroke();
+      }
+      break;
+    case 'mecha':
+      ctx.fillStyle = '#495057';
+      ctx.beginPath();
+      ctx.arc(hx, hy - 3, 18.5, Math.PI * 1.02, Math.PI * 1.98);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(76, 201, 240, 0.75)';
+      roundRect(ctx, hx - 3, hy - 5, 22, 8, 3);
+      ctx.strokeStyle = '#495057';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(hx - 8, hy - 20);
+      ctx.lineTo(hx - 12, hy - 30);
+      ctx.stroke();
+      ctx.fillStyle = Math.sin(time * 6) > 0 ? '#ff6b6b' : '#ffd43b';
+      circle(ctx, hx - 12, hy - 30, 2.5);
+      break;
+    case 'kitsune':
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.ellipse(hx - 12, hy - 12, 8, 10, -0.5, 0, TAU);
+      ctx.fill();
+      ctx.fillStyle = '#e03131';
+      ctx.fillRect(hx - 16, hy - 14, 4, 1.5);
+      ctx.fillRect(hx - 11, hy - 17, 4, 1.5);
+      tri(ctx, hx - 18, hy - 18, hx - 16, hy - 26, hx - 12, hy - 20);
+      break;
+    case 'moonlord':
+      ctx.fillStyle = '#3b2a6b';
+      tri(ctx, hx - 12, hy - 14, hx - 18, hy - 30, hx - 6, hy - 17);
+      tri(ctx, hx + 12, hy - 14, hx + 18, hy - 30, hx + 6, hy - 17);
+      ctx.fillStyle = '#ffd43b';
+      ctx.beginPath();
+      ctx.arc(hx, hy - 10, 5, 0.6, Math.PI * 2 - 0.6);
+      ctx.fill();
+      ctx.fillStyle = '#5f3dc4';
+      circle(ctx, hx + 2, hy - 10, 4);
+      break;
+    case 'idol':
+      ctx.fillStyle = '#ff6b9d';
+      tri(ctx, hx - 2, hy - 18, hx - 14, hy - 26, hx - 14, hy - 12);
+      tri(ctx, hx + 2, hy - 18, hx + 14, hy - 26, hx + 14, hy - 12);
+      circle(ctx, hx, hy - 18, 3.5);
+      ctx.strokeStyle = '#343a40';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(hx, hy, 18, Math.PI * 1.15, Math.PI * 1.85);
+      ctx.moveTo(hx + 16, hy + 2);
+      ctx.quadraticCurveTo(hx + 18, hy + 10, hx + 12, hy + 11);
+      ctx.stroke();
+      ctx.fillStyle = '#343a40';
+      circle(ctx, hx + 12, hy + 11, 2);
+      ctx.fillStyle = `rgba(255, 243, 176, ${0.5 + Math.sin(time * 6) * 0.5})`;
+      star(ctx, hx + 22, hy - 20, 4);
+      break;
+  }
+}
+
+// ---------- Воительницы ----------
+function drawGirlEnemy(ctx, e, time, battle) {
+  const look = lookFor(e, battle.state.stage);
+  ctx.save();
+  ctx.translate(e.x - e.lunge * 8, e.y);
+  drawGirl(ctx, look, { H: e.height, phase: e.phase, lunge: e.lunge, walking: e.x > battle.stopX(e) + 0.5, flash: e.flash, time });
+  ctx.restore();
+  if (e.shield > 0) {
+    ctx.strokeStyle = `rgba(125, 211, 252, ${0.6 + Math.sin(time * 12) * 0.3})`;
+    ctx.fillStyle = 'rgba(125, 211, 252, 0.15)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.ellipse(e.x, e.y - e.height * 0.5, e.size * 1.7, e.height * 0.62, 0, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+  }
+  if (!e.isBoss && e.hp < e.maxHp) {
+    bar(ctx, e.x - e.size, e.y - e.height - 8, e.size * 2, 4, e.hp / e.maxHp, '#ef4444', '#450a0a');
+  }
+}
+
+function drawOrbs(ctx, orbs, time) {
+  for (const o of orbs) {
+    const g = ctx.createRadialGradient(o.x, o.y, 1, o.x, o.y, 11);
+    g.addColorStop(0, '#ffffff');
+    g.addColorStop(0.4, '#c4b5fd');
+    g.addColorStop(1, 'rgba(124, 58, 237, 0)');
+    ctx.fillStyle = g;
+    circle(ctx, o.x, o.y, 11 + Math.sin(time * 15) * 1.5);
+  }
+}
+
+// ---------- Враги ----------
+// Золотая мышь — единственный зверь среди врагов: котики не могут пройти мимо.
 function drawEnemy(ctx, e, time) {
-  const st = ENEMY_STYLE[e.type];
   const s = e.size;
   const step = Math.sin(e.phase);
   ctx.save();
@@ -420,16 +636,15 @@ function drawEnemy(ctx, e, time) {
   ctx.ellipse(0, 2, s * 1.1, s * 0.25, 0, 0, TAU);
   ctx.fill();
 
-  const body = e.flash > 0 ? '#ffffff' : st.body;
-  const dark = e.flash > 0 ? '#ffdddd' : st.dark;
-  const rodent = e.type === 'mouse' || e.type === 'rat' || e.type === 'goldMouse';
+  const body = e.flash > 0 ? '#ffffff' : '#ffd34d';
+  const dark = e.flash > 0 ? '#ffdddd' : '#d9a300';
 
-  ctx.strokeStyle = rodent ? '#e7a4a4' : dark;
+  ctx.strokeStyle = '#e7a4a4';
   ctx.lineWidth = Math.max(2, s * 0.12);
   ctx.lineCap = 'round';
   ctx.beginPath();
   ctx.moveTo(s * 0.8, -s * 0.5);
-  ctx.quadraticCurveTo(s * 1.5, -s * 0.5 + step * 4, s * 1.6, -s * (rodent ? 0.2 : 1.2));
+  ctx.quadraticCurveTo(s * 1.5, -s * 0.5 + step * 4, s * 1.6, -s * 0.2);
   ctx.stroke();
 
   ctx.fillStyle = dark;
@@ -443,71 +658,21 @@ function drawEnemy(ctx, e, time) {
 
   const hx = -s * 0.85;
   const hy = -s * 0.85;
-  if (!rodent) {
-    ctx.fillStyle = body;
-    circle(ctx, hx, hy, s * 0.5);
-    ctx.fillStyle = dark;
-    roundRect(ctx, hx - s * 0.7, hy - s * 0.05, s * 0.45, s * 0.35, s * 0.12);
-    ctx.fillStyle = st.ear;
-    ctx.beginPath();
-    ctx.ellipse(hx + s * 0.25, hy - s * 0.05, s * 0.16, s * 0.38, 0.4 + step * 0.1, 0, TAU);
-    ctx.fill();
-    ctx.fillStyle = '#222';
-    circle(ctx, hx - s * 0.7, hy, s * 0.08);
-  } else {
-    ctx.fillStyle = st.ear;
-    circle(ctx, hx + s * 0.15, hy - s * 0.45, s * 0.3);
-    ctx.fillStyle = body;
-    ctx.beginPath();
-    ctx.ellipse(hx, hy, s * 0.55, s * 0.4, 0.15, 0, TAU);
-    ctx.fill();
-    ctx.fillStyle = '#ff8fab';
-    circle(ctx, hx - s * 0.55, hy + s * 0.05, s * 0.1);
-    ctx.strokeStyle = 'rgba(40,40,40,0.6)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(hx - s * 0.45, hy + s * 0.05);
-    ctx.lineTo(hx - s * 0.85, hy - s * 0.05);
-    ctx.moveTo(hx - s * 0.45, hy + s * 0.1);
-    ctx.lineTo(hx - s * 0.85, hy + s * 0.2);
-    ctx.stroke();
-  }
-  ctx.fillStyle = e.isBoss ? '#ff3b3b' : '#222';
+  ctx.fillStyle = '#fff0a8';
+  circle(ctx, hx + s * 0.15, hy - s * 0.45, s * 0.3);
+  ctx.fillStyle = body;
+  ctx.beginPath();
+  ctx.ellipse(hx, hy, s * 0.55, s * 0.4, 0.15, 0, TAU);
+  ctx.fill();
+  ctx.fillStyle = '#ff8fab';
+  circle(ctx, hx - s * 0.55, hy + s * 0.05, s * 0.1);
+  ctx.fillStyle = '#222';
   circle(ctx, hx - s * 0.2, hy - s * 0.1, Math.max(2, s * 0.09));
-  if (e.type !== 'goldMouse') {
-    ctx.strokeStyle = '#222';
-    ctx.lineWidth = Math.max(1.5, s * 0.05);
-    ctx.beginPath();
-    ctx.moveTo(hx - s * 0.35, hy - s * 0.3);
-    ctx.lineTo(hx - s * 0.05, hy - s * 0.2);
-    ctx.stroke();
-  }
-
-  if (e.isBoss) {
-    ctx.fillStyle = '#ffd700';
-    ctx.beginPath();
-    const cx = hx;
-    const cy = hy - s * 0.5;
-    ctx.moveTo(cx - s * 0.35, cy);
-    ctx.lineTo(cx - s * 0.35, cy - s * 0.3);
-    ctx.lineTo(cx - s * 0.18, cy - s * 0.15);
-    ctx.lineTo(cx, cy - s * 0.38);
-    ctx.lineTo(cx + s * 0.18, cy - s * 0.15);
-    ctx.lineTo(cx + s * 0.35, cy - s * 0.3);
-    ctx.lineTo(cx + s * 0.35, cy);
-    ctx.fill();
-    ctx.fillStyle = '#e63946';
-    circle(ctx, cx, cy - s * 0.1, s * 0.06);
-  }
   ctx.restore();
 
-  if (e.type === 'goldMouse') {
-    ctx.fillStyle = `rgba(255,255,200,${0.5 + Math.sin(time * 12) * 0.5})`;
-    star(ctx, e.x + Math.sin(time * 5) * s, e.y - s * 1.4, 4);
-  }
-  if (!e.isBoss && e.hp < e.maxHp) {
-    bar(ctx, e.x - s, e.y - s * 1.55 - (e.type === 'dog' ? 6 : 0), s * 2, 4, e.hp / e.maxHp, '#ef4444', '#450a0a');
-  }
+  ctx.fillStyle = `rgba(255,255,200,${0.5 + Math.sin(time * 12) * 0.5})`;
+  star(ctx, e.x + Math.sin(time * 5) * s, e.y - s * 1.4, 4);
+  if (e.hp < e.maxHp) bar(ctx, e.x - s, e.y - s * 1.55, s * 2, 4, e.hp / e.maxHp, '#ef4444', '#450a0a');
 }
 
 // ---------- Препятствия ----------
@@ -612,6 +777,14 @@ function drawParticles(ctx, particles) {
       circle(ctx, p.x, p.y, p.size);
       ctx.fillStyle = '#b8860b';
       circle(ctx, p.x, p.y, p.size * 0.45);
+    } else if (p.heart) {
+      heart(ctx, p.x, p.y, p.size);
+    } else if (p.star) {
+      star(ctx, p.x, p.y, p.size);
+    } else if (p.paw) {
+      ctx.globalAlpha = Math.min(1, p.life * 2.5) * 0.85;
+      circle(ctx, p.x, p.y + 3, p.size * 0.55);
+      for (const [dx, dy] of [[-7, -6], [-2.5, -10], [2.5, -10], [7, -6]]) circle(ctx, p.x + dx, p.y + dy, p.size * 0.25);
     } else {
       ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
     }
@@ -658,6 +831,14 @@ function star(ctx, x, y, r) {
     ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
   }
   ctx.closePath();
+  ctx.fill();
+}
+
+function heart(ctx, x, y, s) {
+  ctx.beginPath();
+  ctx.moveTo(x, y + s * 0.9);
+  ctx.bezierCurveTo(x - s * 1.4, y - s * 0.1, x - s * 0.6, y - s * 1.1, x, y - s * 0.35);
+  ctx.bezierCurveTo(x + s * 0.6, y - s * 1.1, x + s * 1.4, y - s * 0.1, x, y + s * 0.9);
   ctx.fill();
 }
 

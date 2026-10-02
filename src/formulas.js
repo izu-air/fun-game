@@ -2,7 +2,7 @@
 import {
   ENEMY, ENEMY_TYPES, HERO, UPGRADES, BOSS_EVERY, BONE_BONUS,
   PRESTIGE_MIN_STAGE, BIOMES, STAGES_PER_BIOME, GUN_FAMILIES, RARITIES, MAX_GUN_TIER,
-  GUN_TIER_POWER, GUN_COST, CATS, CASES,
+  GUN_TIER_POWER, GUN_COST, CATS, CASES, SKINS,
 } from './config.js';
 
 export const isBossStage = (stage) => stage % BOSS_EVERY === 0;
@@ -12,19 +12,19 @@ export function biomeFor(stage) {
 }
 
 // ---------- Враги ----------
-export function enemyHp(stage, type = 'rat') {
+export function enemyHp(stage, type = 'sword') {
   const base = ENEMY.baseHp * ENEMY.hpGrowth ** (stage - 1);
   const mult = type === 'boss' ? ENEMY.boss.hpMult : ENEMY_TYPES[type].hp;
   return base * mult;
 }
 
-export function enemyDamage(stage, type = 'rat') {
+export function enemyDamage(stage, type = 'sword') {
   const base = ENEMY.baseDamage * ENEMY.damageGrowth ** (stage - 1);
   const mult = type === 'boss' ? ENEMY.boss.damageMult : ENEMY_TYPES[type].damage;
   return base * mult;
 }
 
-export function enemyGold(stage, type = 'rat') {
+export function enemyGold(stage, type = 'sword') {
   const base = ENEMY.baseGold * ENEMY.goldGrowth ** (stage - 1);
   const mult = type === 'boss' ? ENEMY.boss.goldMult : ENEMY_TYPES[type].gold;
   return base * mult;
@@ -134,14 +134,19 @@ export function caseOdds(caseKey) {
 
 // ---------- Отряд ----------
 // slots — массив уровней пушек в слотах (0 — пусто). Котик в слоте появляется, только если есть пушка.
-export function squadStats(levels, bones, slots, maxStage = Infinity) {
+// catSkins — ключи скинов на котиках (null — без костюма); бонус скина работает, пока котик в отряде.
+export function squadStats(levels, bones, slots, maxStage = Infinity, catSkins = []) {
   const base = heroStats(levels, bones);
   const active = slots.map((tier, i) => tier > 0 && CATS[i] && CATS[i].unlockStage <= maxStage);
-  const bonus = { teamDamage: 0, critChance: 0, fireRate: 0 };
+  const bonus = { teamDamage: 0, critChance: 0, fireRate: 0, gold: 0, maxHp: 0 };
   active.forEach((on, i) => {
     if (!on) return;
-    for (const k of Object.keys(bonus)) bonus[k] += CATS[i][k] ?? 0;
+    const skin = SKINS[catSkins[i]]?.bonus ?? {};
+    for (const k of Object.keys(bonus)) bonus[k] += (CATS[i][k] ?? 0) + (skin[k] ?? 0);
   });
+  base.goldMult *= 1 + bonus.gold;
+  base.maxHp *= 1 + bonus.maxHp;
+  base.regen *= 1 + bonus.maxHp;
   const cats = slots.map((tier, i) => {
     if (!active[i]) return null;
     const gun = gunInfo(tier);

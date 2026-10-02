@@ -1,11 +1,12 @@
 // Все балансные константы игры в одном месте.
 
 export const SAVE_KEY = 'meowGun.save.v1';
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 
 export const ENEMIES_PER_STAGE = 10;
 export const BOSS_EVERY = 5;
 export const BOSS_TIME_LIMIT = 30; // секунд
+export const CHAPTER_BOSS_TIME_LIMIT = 45; // героиня главы сильнее и со способностями — даём больше времени
 export const MAX_ALIVE_ENEMIES = 6;
 export const SPAWN_INTERVAL = 0.8; // минимальное время убийства цели (для оффлайн-оценки)
 export const MARCH_SPEED = 70; // скорость движения отряда, пикс/с
@@ -30,17 +31,22 @@ export const ENEMY = {
 };
 
 // Типы врагов: множители относительно базовых значений этапа.
+// size — полуширина силуэта, height — высота в долях size, reach — дистанция удара (пикс).
+// Враги — воительницы Звёздной Академии (см. src/story.js).
 export const ENEMY_TYPES = {
-  mouse: { name: 'Мышь', hp: 0.7, damage: 0.7, gold: 0.8, speed: 75, size: 18, weight: 5 },
-  rat:   { name: 'Крыса', hp: 1.0, damage: 1.0, gold: 1.0, speed: 55, size: 23, weight: 4 },
-  dog:   { name: 'Пёс',  hp: 2.0, damage: 1.5, gold: 2.0, speed: 38, size: 30, weight: 2, minStage: 4 },
-  boss:  { name: 'Босс', hp: 1.0, damage: 1.0, gold: 1.0, speed: 22, size: 54, weight: 0 },
+  ninja:  { name: 'Ниндзя', girl: true, hp: 0.7, damage: 0.7, gold: 0.8, speed: 78, size: 14, height: 3.4, reach: 30, weight: 5 },
+  sword:  { name: 'Мечница', girl: true, hp: 1.0, damage: 1.0, gold: 1.0, speed: 55, size: 16, height: 3.4, reach: 36, weight: 4 },
+  knight: { name: 'Рыцарша', girl: true, hp: 2.0, damage: 1.5, gold: 2.0, speed: 38, size: 19, height: 3.3, reach: 40, weight: 2, minStage: 4 },
+  // Волшебница держит дистанцию и бросает магические сферы.
+  mage:   { name: 'Волшебница', girl: true, hp: 0.9, damage: 0.8, gold: 1.4, speed: 45, size: 15, height: 3.4, weight: 2, minStage: 7,
+    ranged: { range: 190, interval: 2.2, speed: 170 } },
+  boss:   { name: 'Капитан', girl: true, hp: 1.0, damage: 1.0, gold: 1.0, speed: 22, size: 28, height: 3.3, reach: 56, weight: 0 },
   // Препятствия стоят на месте и не атакуют, но преграждают путь отряду.
-  tree:  { name: 'Дерево', hp: 1.6, damage: 0, gold: 1.3, speed: 0, size: 30, weight: 4, obstacle: true },
-  rock:  { name: 'Камень', hp: 2.4, damage: 0, gold: 1.8, speed: 0, size: 26, weight: 2, obstacle: true, minStage: 3 },
-  crate: { name: 'Ящик с оружием', hp: 1.2, damage: 0, gold: 0.5, speed: 0, size: 22, weight: 1, obstacle: true, minStage: 2, dropsGun: true },
+  tree:  { name: 'Дерево', hp: 1.6, damage: 0, gold: 1.3, speed: 0, size: 30, weight: 4, obstacle: true, height: 2.6 },
+  rock:  { name: 'Камень', hp: 2.4, damage: 0, gold: 1.8, speed: 0, size: 26, weight: 2, obstacle: true, minStage: 3, height: 1.35 },
+  crate: { name: 'Ящик с оружием', hp: 1.2, damage: 0, gold: 0.5, speed: 0, size: 22, weight: 1, obstacle: true, minStage: 2, dropsGun: true, height: 1.7 },
   // Редкая золотая мышь: убегает назад, если не успеть подстрелить.
-  goldMouse: { name: 'Золотая мышь', hp: 1.5, damage: 0, gold: 12, speed: 90, size: 18, weight: 0.25, minStage: 4, runner: true },
+  goldMouse: { name: 'Золотая мышь', hp: 1.5, damage: 0, gold: 12, speed: 90, size: 18, weight: 0.25, minStage: 4, runner: true, height: 1.2 },
 };
 
 export const HERO = {
@@ -68,6 +74,46 @@ export const UPGRADES = {
   goldBonus:  { name: 'Жадность',         icon: '💰', baseCost: 25, growth: 1.25 },
   forge:      { name: 'Кузня',            icon: '⚒️', baseCost: 500, growth: 6, maxLevel: 12 },
 };
+
+// ---------- Взаимодействия ----------
+export const TAP = {
+  dpsShare: 0.25, // удар лапкой = 25% урона отряда в секунду
+  cooldown: 0.08, // не чаще ~12 ударов в секунду
+  radius: 70, // насколько близко к врагу нужно нажать
+};
+export const PET = {
+  duration: 6, // сколько секунд котик доволен
+  cooldown: 10, // как часто одного котика можно гладить
+  fireRateMult: 1.25,
+};
+
+// ---------- Аниме-скины котиков ----------
+// Скин надевается на одного котика; бонус действует, пока этот котик в отряде с пушкой.
+export const SKINS = {
+  samurai:  { name: 'Самурай лепестков', from: 'Сакура',  bonus: { teamDamage: 0.08 }, desc: '+8% урона отряду' },
+  kunoichi: { name: 'Куноичи пустыни',   from: 'Аяме',    bonus: { critChance: 0.04 }, desc: '+4% шанс крита' },
+  snowmage: { name: 'Снежный маг',       from: 'Юки',     bonus: { fireRate: 0.08 },   desc: '+8% скорострельности' },
+  mecha:    { name: 'Мех-пилот',         from: 'Рин',     bonus: { maxHp: 0.25 },      desc: '+25% здоровья отряда' },
+  kitsune:  { name: 'Кицунэ',            from: 'Микото',  bonus: { gold: 0.15 },       desc: '+15% золота' },
+  moonlord: { name: 'Лунный владыка',    from: 'Луна',    bonus: { teamDamage: 0.15, critChance: 0.03 }, desc: '+15% урона и +3% крита' },
+  idol:     { name: 'Звезда сцены',      from: 'задания', bonus: { gold: 0.1, fireRate: 0.04 }, desc: '+10% золота и +4% скорострельности',
+    questsNeeded: 8 },
+};
+
+// ---------- Задания ----------
+// base — цель первого задания; цели растут на 50% каждые 6 выполненных заданий.
+export const QUEST_TYPES = {
+  kills:     { base: 30, keys: 1, text: (n) => `Победи ${n} воительниц` },
+  taps:      { base: 40, keys: 1, text: (n) => `Нанеси ${n} ударов лапкой` },
+  obstacles: { base: 15, keys: 1, text: (n) => `Разрушь ${n} препятствий` },
+  merges:    { base: 5,  keys: 1, text: (n) => `Слей ${n} пушек` },
+  pets:      { base: 5,  keys: 1, text: (n) => `Погладь котиков ${n} раз` },
+  cases:     { base: 2,  keys: 2, text: (n) => `Открой ${n} кейса` },
+  bosses:    { base: 2,  keys: 2, text: (n) => `Победи ${n} боссов` },
+  goldMice:  { base: 1,  keys: 2, text: (n) => `Поймай золотую мышь: ${n}` },
+};
+export const ACTIVE_QUESTS = 3;
+export const QUEST_GOLD_SECONDS = 45; // золото в награду = столько секунд дохода
 
 // ---------- Оружие ----------
 // 30 уровней: 6 семейств × 5 редкостей. Каждое слияние двух одинаковых пушек даёт уровень +1.
@@ -117,11 +163,11 @@ export const SPEED_UNLOCK = { 5: 'prestige' }; // ×5 — награда за п
 // ---------- Отряд ----------
 export const CATS = [
   { key: 'ryzhik', name: 'Рыжик', fur: '#f4a442', furDark: '#d9822b', belly: '#fff1dc', band: '#e63946',
-    bonus: 'Лидер: +10% урона отряду', unlockStage: 1, teamDamage: 0.1 },
+    bonus: 'Лидер: +10% урона отряду', unlockStage: 1, teamDamage: 0.1, emoji: '😼' },
   { key: 'snezhok', name: 'Снежок', fur: '#eef1f6', furDark: '#b9c2d0', belly: '#ffffff', band: '#3a86ff',
-    bonus: 'Меткий глаз: +5% шанс крита', unlockStage: 6, critChance: 0.05 },
+    bonus: 'Меткий глаз: +5% шанс крита', unlockStage: 6, critChance: 0.05, emoji: '😺' },
   { key: 'ugolek', name: 'Уголёк', fur: '#3b3b46', furDark: '#22222a', belly: '#5a5a68', band: '#2ec27e',
-    bonus: 'Быстрые лапки: +15% скорострельности', unlockStage: 16, fireRate: 0.15 },
+    bonus: 'Быстрые лапки: +15% скорострельности', unlockStage: 16, fireRate: 0.15, emoji: '😾' },
 ];
 
 export const SKILLS = {

@@ -85,12 +85,26 @@ test('форматирование времени', () => {
   assert.equal(formatDuration(3 * 3600 + 120), '3 ч 2 мин');
 });
 
-test('псы не появляются на первых этапах', () => {
+test('рыцарши и волшебницы не появляются на первых этапах', () => {
   for (let i = 0; i < 200; i++) {
-    assert.notEqual(pickEnemyType(1, () => i / 200), 'dog');
+    const t = pickEnemyType(1, () => i / 200);
+    assert.ok(t !== 'knight' && t !== 'mage', t);
   }
-  const seen = new Set(Array.from({ length: 200 }, (_, i) => pickEnemyType(10, () => i / 200)));
-  assert.ok(seen.has('dog') && seen.has('mouse') && seen.has('rat'));
+  const seen = new Set(Array.from({ length: 400 }, (_, i) => pickEnemyType(10, () => i / 400)));
+  for (const t of ['ninja', 'sword', 'knight', 'mage', 'tree', 'rock', 'crate']) assert.ok(seen.has(t), t);
+});
+
+test('скины дают бонусы отряду, только пока котик в строю', () => {
+  const plain = squadStats({}, 0, [1, 0, 0], 100);
+  const samurai = squadStats({}, 0, [1, 0, 0], 100, ['samurai', null, null]);
+  // бонус костюма складывается с лидерским бонусом Рыжика (+10%)
+  assert.ok(Math.abs(samurai.cats[0].damage / plain.cats[0].damage - 1.18 / 1.1) < 1e-9);
+  const mecha = squadStats({}, 0, [1, 0, 0], 100, ['mecha', null, null]);
+  assert.ok(Math.abs(mecha.maxHp / plain.maxHp - 1.25) < 1e-9);
+  const kitsune = squadStats({}, 0, [1, 0, 0], 100, ['kitsune', null, null]);
+  assert.ok(Math.abs(kitsune.goldMult / plain.goldMult - 1.15) < 1e-9);
+  const idle = squadStats({}, 0, [1, 0, 0], 100, [null, 'mecha', null]);
+  assert.equal(idle.maxHp, plain.maxHp, 'Снежок без пушки — бонус костюма не работает');
 });
 
 test('биомы сменяются каждые 10 этапов', () => {

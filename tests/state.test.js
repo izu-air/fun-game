@@ -4,6 +4,7 @@ import {
   createState, buyUpgrade, nextCost, prestige, canPrestige, applyOffline, serialize, deserialize,
   saveToStorage, loadFromStorage, buyGun, addGun, mergeGuns, mergeAll, equipGun, equipBest,
   nextGunCost, openCase, casePrice, caseBlocker, pityLeft, cycleSpeed, availableSpeeds, addKeys,
+  equipSkin, grantSkin, chooseChapter, allies, sparedCount, hasSeen, markSeen,
 } from '../src/state.js';
 import { rollCaseBonus, caseOdds } from '../src/formulas.js';
 import {
@@ -350,4 +351,79 @@ test('скорость: ×5 открывается после перерожде
   assert.equal(deserialize(serialize(s)).speed, 5);
   s.stats.prestiges = 0;
   assert.equal(deserialize(serialize(s)).speed, 1, 'недоступная скорость сбрасывается');
+});
+
+// ---------- Сюжет и скины ----------
+test('выбор в главе: костюм всегда, ключи — только за трофей, выбор один раз', () => {
+  const s = createState();
+  const keys = s.keys;
+  assert.deepEqual(chooseChapter(s, 0, 'spare'), { skin: 'samurai', keys: 0 });
+  assert.ok(s.skins.includes('samurai'));
+  assert.equal(chooseChapter(s, 0, 'trophy'), null, 'передумать нельзя');
+  assert.deepEqual(chooseChapter(s, 1, 'trophy'), { skin: 'kunoichi', keys: 2 });
+  assert.equal(s.keys, keys + 2);
+  assert.equal(sparedCount(s), 1);
+  assert.deepEqual(allies(s).map((h) => h.key), ['sakura']);
+});
+
+test('Императрица не считается своей же союзницей', () => {
+  const s = createState();
+  for (let ch = 0; ch < 6; ch++) chooseChapter(s, ch, 'spare');
+  assert.equal(allies(s).length, 5);
+  assert.equal(sparedCount(s), 6);
+});
+
+test('костюм носит только один котик; повторное нажатие снимает', () => {
+  const s = createState();
+  assert.equal(equipSkin(s, 'samurai', 0), false, 'чужой костюм не надеть');
+  grantSkin(s, 'samurai');
+  assert.equal(grantSkin(s, 'samurai'), false);
+  equipSkin(s, 'samurai', 0);
+  assert.deepEqual(s.catSkins, ['samurai', null, null]);
+  equipSkin(s, 'samurai', 2);
+  assert.deepEqual(s.catSkins, [null, null, 'samurai'], 'переехал на Уголька');
+  equipSkin(s, 'samurai', 2);
+  assert.deepEqual(s.catSkins, [null, null, null], 'снят');
+});
+
+test('сюжет, костюмы и задания переживают перерождение', () => {
+  const s = createState();
+  s.maxStage = 40;
+  chooseChapter(s, 0, 'spare');
+  equipSkin(s, 'samurai', 0);
+  markSeen(s, 'prologue');
+  s.questsDone = 3;
+  prestige(s);
+  assert.ok(hasSeen(s, 'prologue'));
+  assert.deepEqual(s.catSkins, ['samurai', null, null]);
+  assert.equal(s.story.choices[0], 'spare');
+  assert.equal(s.questsDone, 3);
+});
+
+test('сохранение 2-й версии получает пустой сюжет и задания', () => {
+  const s = deserialize(JSON.stringify({ version: 2, gold: 5, stage: 12, maxStage: 12, slots: [3, 2, 0] }));
+  assert.deepEqual(s.story, { seen: [], choices: {} });
+  assert.deepEqual(s.skins, []);
+  assert.equal(s.quests.length, 3);
+});
+
+test('битые данные сюжета и скинов отбрасываются', () => {
+  const s = deserialize(JSON.stringify({
+    story: { seen: ['prologue', 5, null], choices: { 0: 'spare', 1: 'steal', 99: 'spare' } },
+    skins: ['samurai', 'nope', 'samurai'],
+    catSkins: ['samurai', 'samurai', 'kitsune'],
+    quests: [{ type: 'kills', target: 10, progress: 99 }, { type: 'kills', target: 1, progress: 0 }, { type: 'x' }],
+  }));
+  assert.deepEqual(s.story.seen, ['prologue']);
+  assert.deepEqual(s.story.choices, { 0: 'spare' });
+  assert.deepEqual(s.skins, ['samurai']);
+  assert.deepEqual(s.catSkins, ['samurai', null, null], 'дубль и не полученный костюм сняты');
+  assert.equal(new Set(s.quests.map((q) => q.type)).size, 3, 'кривые задания заменены новыми');
+});
+
+test('прогресс заданий сохраняется', () => {
+  const s = createState();
+  s.quests[0].progress = 1;
+  const back = deserialize(serialize(s));
+  assert.deepEqual(back.quests, s.quests);
 });

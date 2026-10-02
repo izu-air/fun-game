@@ -1,17 +1,27 @@
 // Точка входа: игровой цикл, связка боя с интерфейсом, сохранения.
-import { UPGRADES, SKILLS, PRESTIGE_MIN_STAGE, CATS, MAX_GUN_TIER, CASES } from './config.js';
+import {
+  UPGRADES, SKILLS, PRESTIGE_MIN_STAGE, CATS, MAX_GUN_TIER, CASES, SKINS, QUEST_TYPES, QUEST_GOLD_SECONDS,
+  SPAWN_INTERVAL, CHAPTER_BOSS_TIME_LIMIT, BOSS_TIME_LIMIT,
+} from './config.js';
 import {
   formatNumber, formatDuration, isMaxed, isBossStage, biomeFor, bonesForPrestige,
-  boneMultiplier, expectedDps, squadDps, gunInfo, buyTier, caseOdds, rollCaseBonus,
+  boneMultiplier, expectedDps, squadDps, gunInfo, buyTier, caseOdds, rollCaseBonus, idleGoldPerSecond,
 } from './formulas.js';
 import {
   createState, statsOf, buyUpgrade, nextCost, isSkillUnlocked, canPrestige, prestige,
   applyOffline, saveToStorage, loadFromStorage, clearStorage, buyGun, nextGunCost, mergeGuns,
   mergeAll, equipGun, equipBest, isSlotUnlocked, casePrice, caseBlocker, openCase, pityLeft,
-  cycleSpeed, availableSpeeds,
+  cycleSpeed, availableSpeeds, hasSeen, markSeen, chooseChapter, sparedCount, allies, equipSkin,
 } from './state.js';
 import { Battle, WORLD } from './battle.js';
-import { render, drawGun, GUN_EXTENTS } from './render.js';
+import { render, drawGun, GUN_EXTENTS, drawCatPreview } from './render.js';
+import { drawGirlPortrait } from './girls.js';
+import {
+  PROLOGUE, JOIN_SCENES, CHAPTERS, HEROINES, ABILITY_TEXT, SPARE_LABEL, TROPHY_LABEL, TROPHY_KEYS, ALLY_BOSS_WEAKEN,
+  endingFor, EPILOGUE, chapterForStage, heroineForStage,
+} from './story.js';
+import { questText, isQuestDone, claimQuest } from './quests.js';
+import { initDialogue, playScene, isDialogueOpen } from './dialogue.js';
 import { sfx, unlockAudio, setSoundEnabled } from './audio.js';
 
 const $ = (id) => document.getElementById(id);
@@ -67,7 +77,9 @@ function showModal({ icon, title, text, actions }) {
 function newBattle() {
   battle = new Battle(state, {
     onStageStart(stage, boss) {
-      if (boss) toast(`👑 Босс! Победи его за 30 секунд`);
+      const heroine = heroineForStage(stage);
+      if (heroine) toast(`👑 ${heroine.name}: ${ABILITY_TEXT[heroine.ability]}. ${CHAPTER_BOSS_TIME_LIMIT} секунд!`);
+      else if (boss) toast(`👑 Капитан Академии! Победи её за ${BOSS_TIME_LIMIT} секунд`);
       else if ((stage - 1) % 10 === 0 && stage > 1) toast(`🌍 Новая локация: ${biomeFor(stage).name}`);
       if (stage === state.maxStage) {
         for (const s of Object.values(SKILLS)) {
@@ -81,12 +93,17 @@ function newBattle() {
         });
       }
       if (boss) sfx('boss');
+      storyOnStageStart(stage);
     },
     onStageFail(message) {
       toast(message);
     },
-    onBossKill() {
+    onBossKill(stage, heroine) {
       sfx('win');
+      if (heroine) storyOnHeroineDefeated(stage);
+    },
+    onPet(i) {
+      if (state.stats.pets === 1) toast(`💗 ${CATS[i].name} мурчит и стреляет быстрее!`);
     },
     onKey(n) {
       sfx('key');
@@ -97,6 +114,254 @@ function newBattle() {
       renderArsenal();
     },
     sfx,
+  });
+}
+
+// ---------- Сюжет ----------
+async function playOnce(id, lines, title) {
+  if (hasSeen(state, id)) return;
+  markSeen(state, id);
+  saveToStorage(state);
+  sfx('story');
+  await playScene(lines, { title });
+}
+
+function storyOnStageStart(stage) {
+  if (stage !== state.maxStage) return;
+  if (JOIN_SCENES[stage]) playOnce(`join${stage}`, JOIN_SCENES[stage], 'Новый боец');
+  const ch = chapterForStage(stage);
+  if (ch >= 0) {
+    const intro = [...CHAPTERS[ch].intro];
+    if (CHAPTERS[ch].final && allies(state).length) {
+      const names = allies(state).map((h) => h.name).join(', ');
+      intro.push({ who: 'narrator', text: `На помощь отряду пришли ${names}! Императрица ослаблена на ${Math.round(ALLY_BOSS_WEAKEN * allies(state).length * 100)}%.` });
+    }
+    playOnce(`intro${ch}`, intro, CHAPTERS[ch].title);
+  }
+}
+
+async function storyOnHeroineDefeated(stage) {
+  const ch = chapterForStage(stage);
+  const chapter = CHAPTERS[ch];
+  if (state.story.choices[ch]) return;
+  markSeen(state, `outro${ch}`);
+  const choice = await playScene(chapter.outro, {
+    title: chapter.title,
+    choices: [
+      { label: `🤝 ${chapter.spareLabel ?? SPARE_LABEL}`, value: 'spare', primary: true },
+      { label: `🔑 ${chapter.trophyLabel ?? TROPHY_LABEL} (+${TROPHY_KEYS})`, value: 'trophy' },
+    ],
+  });
+  const reward = chooseChapter(state, ch, choice ?? 'spare');
+  await playScene([chapter[choice ?? 'spare']], { title: chapter.title });
+  if (reward) {
+    toast(`👘 Новый костюм: ${SKINS[reward.skin].name}! Загляни во вкладку «Скины»`);
+    if (reward.keys) sfx('key');
+  }
+  if (chapter.final && !hasSeen(state, 'ending')) {
+    markSeen(state, 'ending');
+    await playScene(endingFor(sparedCount(state)), { title: 'Финал' });
+    await playScene(EPILOGUE, { title: 'Конец первой книги' });
+  }
+  saveToStorage(state);
+  renderStory();
+  renderWardrobe();
+}
+
+// Сохранения, пройденные до появления сюжета: показываем пропущенные развязки глав,
+// чтобы игрок сделал выбор и получил костюмы героинь.
+async function storyCatchUp() {
+  await playOnce('prologue', PROLOGUE, 'Пролог');
+  for (let ch = 0; ch < CHAPTERS.length; ch++) {
+    const stage = (ch + 1) * 10;
+    if (state.maxStage > stage && !state.story.choices[ch]) {
+      markSeen(state, `intro${ch}`);
+      await storyOnHeroineDefeated(stage);
+    }
+  }
+}
+
+// Повтор уже увиденной главы целиком — без выбора, с репликой по сделанному выбору.
+function replayChapter(ch) {
+  const chapter = CHAPTERS[ch];
+  const choice = state.story.choices[ch];
+  const lines = [...chapter.intro, ...(choice ? [...chapter.outro, chapter[choice]] : [])];
+  playScene(lines, { title: chapter.title });
+}
+
+function renderStory() {
+  const box = $('chapter-list');
+  box.replaceChildren();
+  const prologue = document.createElement('div');
+  prologue.className = 'chapter';
+  prologue.innerHTML = `<canvas width="96" height="96"></canvas>
+    <div><div class="ch-title">Пролог. Пропажа Великой Рыбы</div>
+    <div class="ch-sub">Мурград остался без Рыбы. Рыжик отправляется в поход.</div></div>`;
+  const pb = document.createElement('button');
+  pb.textContent = '▶ Читать';
+  pb.onclick = () => playScene(PROLOGUE, { title: 'Пролог' });
+  prologue.append(pb);
+  const pc = prologue.querySelector('canvas').getContext('2d');
+  pc.fillStyle = '#352a5a';
+  pc.fillRect(0, 0, 96, 96);
+  drawCatPreview(pc, 0, state.catSkins[0], 96, 96);
+  box.append(prologue);
+
+  CHAPTERS.forEach((chapter, ch) => {
+    const h = HEROINES[ch];
+    const stage = (ch + 1) * 10;
+    const choice = state.story.choices[ch];
+    const seen = hasSeen(state, `intro${ch}`);
+    const el = document.createElement('div');
+    el.className = 'chapter' + (seen ? '' : ' locked');
+    el.style.setProperty('--chapter-accent', h.accent);
+    const status = choice === 'spare' ? '🤝 Пощажена — придёт на помощь'
+      : choice === 'trophy' ? `🔑 Трофей взят (+${TROPHY_KEYS} ключа)`
+        : seen ? '⚔️ Бой не окончен' : `🔒 Этап ${stage}`;
+    el.innerHTML = `<canvas width="96" height="96"></canvas>
+      <div><div class="ch-title">${chapter.title}</div>
+      <div class="ch-sub">${seen ? `${h.name}, ${h.title.toLowerCase()} — ${ABILITY_TEXT[h.ability]}` : 'Глава ещё впереди'}</div>
+      <div class="ch-status" style="color:${h.accent}">${status}</div></div>`;
+    if (seen) {
+      const b = document.createElement('button');
+      b.textContent = '▶ Читать';
+      b.onclick = () => replayChapter(ch);
+      el.append(b);
+    }
+    const g = el.querySelector('canvas').getContext('2d');
+    if (seen) {
+      g.fillStyle = h.hair;
+      g.fillRect(0, 0, 96, 96);
+      drawGirlPortrait(g, h.key, 96, 96);
+    } else {
+      g.fillStyle = '#2a2147';
+      g.fillRect(0, 0, 96, 96);
+      g.font = '40px system-ui';
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText('❔', 48, 50);
+    }
+    box.append(el);
+  });
+  if (hasSeen(state, 'ending')) {
+    const end = document.createElement('div');
+    end.className = 'chapter';
+    end.innerHTML = `<canvas width="96" height="96"></canvas><div><div class="ch-title">Финал</div>
+      <div class="ch-sub">Пощажено героинь: ${sparedCount(state)} из ${CHAPTERS.length}</div></div>`;
+    const b = document.createElement('button');
+    b.textContent = '▶ Читать';
+    b.onclick = () => playScene([...endingFor(sparedCount(state)), ...EPILOGUE], { title: 'Финал' });
+    end.append(b);
+    const g = end.querySelector('canvas').getContext('2d');
+    g.font = '48px system-ui';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText('🐟', 48, 50);
+    box.append(end);
+  }
+}
+
+// ---------- Задания ----------
+const questRows = [];
+function questGoldReward() {
+  return idleGoldPerSecond(Math.max(1, state.stage), statsOf(state), SPAWN_INTERVAL) * QUEST_GOLD_SECONDS;
+}
+
+function updateQuests() {
+  const box = $('quest-list');
+  state.quests.forEach((q, i) => {
+    const sig = `${q.type}:${q.target}:${state.questsDone}`;
+    let row = questRows[i];
+    if (!row || row.sig !== sig) {
+      const el = document.createElement('div');
+      el.className = 'quest';
+      el.innerHTML = `<div><div class="quest-text">${questText(q)}</div>
+        <div class="quest-reward">Награда: 🔑 ${QUEST_TYPES[q.type].keys} и золото</div></div>
+        <button>Забрать</button><div class="progress"><div></div></div>`;
+      el.querySelector('button').onclick = () => {
+        const r = claimQuest(state, i, questGoldReward());
+        if (!r) return;
+        sfx('key');
+        toast(`✅ +${r.keys} 🔑 и 🪙 ${formatNumber(r.gold)}`);
+        if (r.skin) toast(`👘 Новый костюм за задания: ${SKINS[r.skin].name}!`);
+        updateQuests();
+        renderWardrobe();
+      };
+      if (row) row.el.replaceWith(el);
+      else box.append(el);
+      row = questRows[i] = { el, sig, bar: el.querySelector('.progress > div'), btn: el.querySelector('button') };
+    }
+    row.bar.style.width = `${(q.progress / q.target) * 100}%`;
+    row.btn.disabled = !isQuestDone(q);
+    row.btn.textContent = isQuestDone(q) ? 'Забрать' : `${q.progress}/${q.target}`;
+  });
+  let done = $('quests-done');
+  if (!done) {
+    done = document.createElement('p');
+    done.id = 'quests-done';
+    done.className = 'quests-done';
+    box.after(done);
+  }
+  const idolLeft = SKINS.idol.questsNeeded - state.questsDone;
+  done.textContent = `Выполнено заданий: ${state.questsDone}` + (idolLeft > 0 ? ` · до костюма «${SKINS.idol.name}» осталось ${idolLeft}` : '');
+}
+
+// ---------- Гардероб ----------
+let wardrobeCat = 0;
+function renderWardrobe() {
+  const cats = $('wardrobe-cats');
+  cats.replaceChildren();
+  CATS.forEach((cat, i) => {
+    const open = isSlotUnlocked(state, i);
+    const b = document.createElement('button');
+    b.className = 'wardrobe-cat' + (i === wardrobeCat ? ' selected' : '') + (open ? '' : ' locked');
+    const skin = state.catSkins[i];
+    b.innerHTML = `<canvas width="220" height="220"></canvas><span class="cat-name">${cat.name}</span>
+      <span class="cat-skin">${open ? (skin ? SKINS[skin].name : 'Без костюма') : `🔒 этап ${cat.unlockStage}`}</span>`;
+    const g = b.querySelector('canvas').getContext('2d');
+    g.fillStyle = '#211a3a';
+    g.fillRect(0, 0, 220, 220);
+    drawCatPreview(g, i, skin, 220, 220, 1, state.slots[i] ? gunInfo(state.slots[i]) : null);
+    b.onclick = () => {
+      if (!open) return toast(`🔒 ${cat.name} присоединится на этапе ${cat.unlockStage}`);
+      wardrobeCat = i;
+      renderWardrobe();
+    };
+    cats.append(b);
+  });
+
+  const list = $('skin-list');
+  list.replaceChildren();
+  for (const [key, skin] of Object.entries(SKINS)) {
+    const owned = state.skins.includes(key);
+    const wornBy = state.catSkins.indexOf(key);
+    const b = document.createElement('button');
+    b.className = 'skin' + (wornBy === wardrobeCat ? ' worn' : '') + (owned ? '' : ' locked');
+    const heroineIdx = HEROINES.findIndex((h) => h.skin === key);
+    const how = skin.questsNeeded ? `за ${skin.questsNeeded} заданий (${state.questsDone}/${skin.questsNeeded})`
+      : `победи ${HEROINES[heroineIdx].name} на этапе ${(heroineIdx + 1) * 10}`;
+    b.innerHTML = `<b>${owned ? '' : '🔒 '}${skin.name}</b>
+      <span class="skin-bonus">${skin.desc}</span>
+      <small>${owned ? (wornBy >= 0 ? `Надет: ${CATS[wornBy].name}${wornBy === wardrobeCat ? ' · нажми, чтобы снять' : ''}` : `Подарок: ${skin.from}`) : how}</small>`;
+    b.onclick = () => {
+      if (!owned) return toast(`🔒 Костюм «${skin.name}»: ${how}`);
+      equipSkin(state, key, wardrobeCat);
+      battle.refresh();
+      sfx('buy');
+      renderWardrobe();
+    };
+    list.append(b);
+  }
+}
+
+// ---------- Касания по полю боя ----------
+function setupFieldTaps() {
+  canvas.addEventListener('pointerdown', (e) => {
+    if (isDialogueOpen()) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * WORLD.width;
+    const y = ((e.clientY - rect.top) / rect.height) * WORLD.height;
+    battle.tap(x, y);
   });
 }
 
@@ -552,6 +817,11 @@ function setupTabs() {
       updateUI(true);
       if (tab.dataset.tab === 'arsenal') renderArsenal();
       if (tab.dataset.tab === 'cases') updateCases();
+      if (tab.dataset.tab === 'skins') renderWardrobe();
+      if (tab.dataset.tab === 'story') {
+        renderStory();
+        updateQuests();
+      }
     };
   }
 }
@@ -623,6 +893,11 @@ function updateStats(stats) {
     ['Слияний', formatNumber(state.stats.merges)],
     ['Открыто кейсов', formatNumber(state.stats.casesOpened)],
     ['Суперпризов', formatNumber(state.stats.jackpots)],
+    ['Ударов лапкой', formatNumber(state.stats.taps)],
+    ['Котиков поглажено', formatNumber(state.stats.pets)],
+    ['Выполнено заданий', formatNumber(state.questsDone)],
+    ['Пощажено героинь', `${sparedCount(state)} из ${CHAPTERS.length}`],
+    ['Костюмов', `${state.skins.length} из ${Object.keys(SKINS).length}`],
     ['Текущий этап', state.stage],
     ['Рекорд этапа', state.maxStage],
     ['Побеждено врагов', formatNumber(state.stats.kills)],
@@ -660,6 +935,8 @@ function updateUI(force = false) {
   if (!$('panel-profile').hidden) updateStats(stats);
   if (!$('panel-cases').hidden) updateCases();
   else document.querySelector('[data-tab="cases"]').classList.toggle('badge', state.keys > 0 && state.guns.includes(0));
+  if (!$('panel-story').hidden) updateQuests();
+  document.querySelector('[data-tab="story"]').classList.toggle('badge', state.quests.some(isQuestDone));
 }
 
 // ---------- Игровой цикл ----------
@@ -669,7 +946,8 @@ function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000); // защита от скачков после сворачивания вкладки
   last = now;
   // Ускорение: несколько шагов симуляции за кадр — поведение то же, что и на ×1.
-  for (let i = 0; i < state.speed; i++) battle.update(dt);
+  // Пока идёт сюжетная сцена, бой на паузе.
+  if (!isDialogueOpen()) for (let i = 0; i < state.speed; i++) battle.update(dt);
   state.stats.playTime += dt; // реальное время, без учёта ускорения
   render(ctx, battle, battle.time);
   uiTimer -= dt;
@@ -710,6 +988,8 @@ $('boss-btn').onclick = () => battle.challengeBoss();
 
 setSoundEnabled(state.sound);
 updateSoundBtn();
+initDialogue({ catSkin: (i) => state.catSkins[i], sfx });
+setupFieldTaps();
 setupArsenal();
 buildCases();
 setupRoulette();
@@ -724,4 +1004,5 @@ renderArsenal();
 resizeCanvas();
 updateUI(true);
 if (offline) showOfflineModal(offline);
+storyCatchUp();
 requestAnimationFrame(frame);

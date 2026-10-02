@@ -2,8 +2,10 @@
 import {
   UPGRADES, SKILLS, SAVE_KEY, SAVE_VERSION, OFFLINE_MAX_SECONDS, OFFLINE_EFFICIENCY,
   OFFLINE_MIN_SECONDS, SPAWN_INTERVAL, INVENTORY_SIZE, CATS, MAX_GUN_TIER, CASES, KEYS,
-  JACKPOT_BONUS, GAME_SPEEDS, SPEED_UNLOCK,
+  JACKPOT_BONUS, GAME_SPEEDS, SPEED_UNLOCK, SKINS, QUEST_TYPES, ACTIVE_QUESTS,
 } from './config.js';
+import { CHAPTERS, HEROINES, TROPHY_KEYS } from './story.js';
+import { initialQuests, newQuest, progressQuest } from './quests.js';
 import {
   upgradeCost, isMaxed, bulkPurchase, squadStats, bonesForPrestige, idleGoldPerSecond,
   gunCost, buyTier, rollCaseBonus,
@@ -28,12 +30,62 @@ export function createState() {
     pity: 0, // обычных кейсов подряд без крупного выигрыша
     speed: 1,
     sound: true,
-    stats: { kills: 0, bossKills: 0, prestiges: 0, totalGold: 0, playTime: 0, merges: 0, bestGun: 1, casesOpened: 0, jackpots: 0 },
+    story: { seen: [], choices: {} }, // просмотренные сцены и выборы в главах ('spare' | 'trophy')
+    skins: [], // полученные аниме-скины
+    catSkins: CATS.map(() => null), // какой скин надет на каждого котика
+    quests: initialQuests(),
+    questsDone: 0,
+    stats: { kills: 0, bossKills: 0, prestiges: 0, totalGold: 0, playTime: 0, merges: 0, bestGun: 1, casesOpened: 0, jackpots: 0, taps: 0, pets: 0, goldMice: 0 },
     lastSeen: Date.now(),
   };
 }
 
-export const statsOf = (state) => squadStats(state.levels, state.bones, state.slots, state.maxStage);
+export const statsOf = (state) => squadStats(state.levels, state.bones, state.slots, state.maxStage, state.catSkins);
+
+// ---------- Сюжет ----------
+export const hasSeen = (state, id) => state.story.seen.includes(id);
+
+export function markSeen(state, id) {
+  if (!hasSeen(state, id)) state.story.seen.push(id);
+}
+
+export const sparedCount = (state) => Object.values(state.story.choices).filter((c) => c === 'spare').length;
+
+// Союзницы финала: пощажённые героини первых пяти глав.
+export const allies = (state) => HEROINES.slice(0, CHAPTERS.length - 1).filter((_, i) => state.story.choices[i] === 'spare');
+
+// Выбор после победы над героиней главы: скин в любом случае, за трофей — ещё и ключи сразу.
+export function chooseChapter(state, chapter, choice) {
+  if (state.story.choices[chapter]) return null;
+  state.story.choices[chapter] = choice;
+  const skin = HEROINES[chapter].skin;
+  grantSkin(state, skin);
+  const keys = choice === 'trophy' ? TROPHY_KEYS : 0;
+  state.keys += keys;
+  return { skin, keys };
+}
+
+// ---------- Скины ----------
+export function grantSkin(state, key) {
+  if (!SKINS[key] || state.skins.includes(key)) return false;
+  state.skins.push(key);
+  return true;
+}
+
+// Надевает скин на котика. Скин один на весь отряд: с другого котика он снимается.
+// Повторное нажатие на надетый скин снимает его.
+export function equipSkin(state, key, cat) {
+  if (key !== null && !state.skins.includes(key)) return false;
+  if (key !== null && state.catSkins[cat] === key) {
+    state.catSkins[cat] = null;
+    return true;
+  }
+  state.catSkins = state.catSkins.map((k) => (k === key ? null : k));
+  state.catSkins[cat] = key;
+  return true;
+}
+
+export { progressQuest };
 
 // ---------- Оружие ----------
 export const isSlotUnlocked = (state, i) => state.maxStage >= CATS[i].unlockStage;
@@ -99,6 +151,7 @@ export function openCase(state, key, rand = Math.random) {
   const index = addGun(state, tier);
   const jackpot = bonus >= JACKPOT_BONUS;
   state.stats.casesOpened++;
+  progressQuest(state, 'cases');
   if (jackpot) state.stats.jackpots++;
   return { tier, bonus, jackpot, forced, index };
 }
@@ -126,6 +179,7 @@ export function mergeGuns(state, from, to) {
   g[to] += 1;
   g[from] = 0;
   state.stats.merges++;
+  progressQuest(state, 'merges');
   noteGun(state, g[to]);
   return true;
 }
@@ -208,8 +262,13 @@ export function prestige(state) {
     autoSkills: state.autoSkills,
     sound: state.sound,
     speed: state.speed,
-    keys: state.keys, // ключи и счётчик гарантии перерождение не сжигает
+    keys: state.keys, // ключи, гарантию, сюжет, скины и задания перерождение не сжигает
     pity: state.pity,
+    story: state.story,
+    skins: state.skins,
+    catSkins: state.catSkins,
+    quests: state.quests,
+    questsDone: state.questsDone,
     stats: { ...state.stats, prestiges: state.stats.prestiges + 1 },
   });
   return gained;
@@ -273,6 +332,30 @@ export function deserialize(json) {
     state.stats[key] = num(data.stats?.[key], fresh.stats[key]);
   }
   if (!availableSpeeds(state).includes(state.speed)) state.speed = 1;
+
+  // Сюжет, скины и задания (появились в версии 3).
+  const strings = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
+  state.story.seen = strings(data.story?.seen);
+  for (const [ch, choice] of Object.entries(data.story?.choices ?? {})) {
+    if (CHAPTERS[ch] && (choice === 'spare' || choice === 'trophy')) state.story.choices[ch] = choice;
+  }
+  state.skins = [...new Set(strings(data.skins).filter((k) => SKINS[k]))];
+  if (Array.isArray(data.catSkins)) {
+    state.catSkins = state.catSkins.map((_, i) => {
+      const k = data.catSkins[i];
+      return state.skins.includes(k) && data.catSkins.indexOf(k) === i ? k : null;
+    });
+  }
+  state.questsDone = Math.floor(num(data.questsDone, 0));
+  if (Array.isArray(data.quests) && data.quests.length === ACTIVE_QUESTS
+    && data.quests.every((q) => QUEST_TYPES[q?.type])
+    && new Set(data.quests.map((q) => q.type)).size === ACTIVE_QUESTS) {
+    state.quests = data.quests.map((q) => {
+      const fresh = newQuest(q.type, state.questsDone);
+      const target = Math.max(1, Math.floor(num(q.target, fresh.target)));
+      return { type: q.type, target, progress: Math.min(target, Math.floor(num(q.progress, 0))) };
+    });
+  }
   return state;
 }
 

@@ -28,10 +28,12 @@
     <section class="skills" id="skills"></section>
 
     <nav class="tabs" role="tablist">
-      <button class="tab active" data-tab="arsenal" role="tab">Арсенал</button>
-      <button class="tab" data-tab="cases" role="tab">Кейсы</button>
-      <button class="tab" data-tab="upgrades" role="tab">Прокачка</button>
-      <button class="tab" data-tab="profile" role="tab">Профиль</button>
+      <button class="tab active" data-tab="arsenal" role="tab"><span>🔫</span>Арсенал</button>
+      <button class="tab" data-tab="cases" role="tab"><span>🎁</span>Кейсы</button>
+      <button class="tab" data-tab="upgrades" role="tab"><span>⬆️</span>Прокачка</button>
+      <button class="tab" data-tab="skins" role="tab"><span>👘</span>Скины</button>
+      <button class="tab" data-tab="story" role="tab"><span>📜</span>Сюжет</button>
+      <button class="tab" data-tab="profile" role="tab"><span>🦴</span>Профиль</button>
     </nav>
 
     <section class="panel" id="panel-arsenal">
@@ -54,6 +56,20 @@
       <div class="case-grid" id="case-grid"></div>
       <p class="hint">Пушка из кейса — уровня Кузни плюс бонус. Ключи 🔑 падают с боссов (×2 с каждого 10-го)
         и иногда с золотой мыши.</p>
+    </section>
+
+    <section class="panel" id="panel-skins" hidden>
+      <div class="wardrobe-cats" id="wardrobe-cats"></div>
+      <div class="skin-list" id="skin-list"></div>
+      <p class="hint">Выбери котика, потом костюм. Героини дарят костюмы после победы над ними,
+        «Звезду сцены» дают за 8 выполненных заданий. Бонус костюма работает, пока котик в отряде с пушкой.</p>
+    </section>
+
+    <section class="panel" id="panel-story" hidden>
+      <h3 class="section-title first">Задания</h3>
+      <div class="quest-list" id="quest-list"></div>
+      <h3 class="section-title">Поход за Великой Рыбой</h3>
+      <div class="chapter-list" id="chapter-list"></div>
     </section>
 
     <section class="panel" id="panel-upgrades" hidden>
@@ -97,6 +113,24 @@
         <button id="roulette-skip" class="secondary">Пропустить</button>
         <button id="roulette-again" class="secondary" hidden>Ещё раз</button>
         <button id="roulette-take" class="primary" hidden>Забрать</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="dialogue" id="dialogue" hidden>
+    <div class="dialogue-card" id="dialogue-card">
+      <div class="dialogue-title" id="dialogue-title"></div>
+      <div class="dialogue-body">
+        <canvas id="dialogue-portrait" width="200" height="200" aria-hidden="true"></canvas>
+        <div class="dialogue-text">
+          <div class="speaker" id="dialogue-speaker"></div>
+          <p id="dialogue-line"></p>
+        </div>
+      </div>
+      <div class="dialogue-choices" id="dialogue-choices"></div>
+      <div class="dialogue-footer">
+        <span class="dialogue-hint" id="dialogue-hint">Нажми, чтобы продолжить ▸</span>
+        <button id="dialogue-skip" class="link-btn">Пропустить сцену</button>
       </div>
     </div>
   </div>

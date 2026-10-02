@@ -116,6 +116,19 @@ export function sfx(name, variant) {
       [523, 659, 784, 1047, 1319, 1568].forEach((f, i) => tone({ type: 'square', from: f, dur: 0.2, vol: 0.13, delay: i * 0.08 }));
       [1047, 1319, 1568].forEach((f) => tone({ type: 'triangle', from: f, dur: 0.8, vol: 0.12, delay: 0.5 }));
       break;
+    case 'tap':
+      if (throttle('tap', 0.04)) noise({ dur: 0.05, vol: 0.2, filter: 1800 });
+      break;
+    case 'purr':
+      tone({ type: 'sine', from: 70, to: 60, dur: 0.5, vol: 0.25 });
+      tone({ type: 'sine', from: 72, to: 64, dur: 0.5, vol: 0.2, delay: 0.5 });
+      break;
+    case 'dialog':
+      if (throttle('dialog', 0.06)) tone({ type: 'triangle', from: 660 + Math.random() * 120, dur: 0.03, vol: 0.05 });
+      break;
+    case 'story':
+      [392, 523, 659].forEach((f, i) => tone({ type: 'triangle', from: f, dur: 0.25, vol: 0.15, delay: i * 0.12 }));
+      break;
     case 'win':
       [523, 659, 784, 1047].forEach((f, i) => tone({ type: 'square', from: f, dur: 0.14, vol: 0.12, delay: i * 0.1 }));
       break;

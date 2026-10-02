@@ -200,7 +200,7 @@ button {
 /* ---------- Вкладки ---------- */
 .tabs {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   background: var(--panel);
   border-radius: 12px;
   padding: 4px;
@@ -208,13 +208,19 @@ button {
 }
 .tab {
   background: transparent;
-  padding: 8px 4px;
+  padding: 6px 2px;
   border-radius: 9px;
   font-weight: 700;
-  font-size: 12px;
+  font-size: 10.5px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  min-width: 0;
   color: var(--muted);
 }
 .tab.active { background: var(--panel-2); color: var(--text); }
+.tab span { font-size: 17px; line-height: 1.1; }
 .tab { position: relative; }
 .tab.badge::after {
   content: "";
@@ -475,6 +481,135 @@ button {
 @keyframes fall { to { transform: translateY(105vh) rotate(720deg); } }
 
 .section-title { margin: 16px 2px 8px; font-size: 15px; }
+.section-title.first { margin-top: 2px; }
+
+/* ---------- Гардероб ---------- */
+.wardrobe-cats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.wardrobe-cat {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 6px 4px 8px;
+  border: 2px solid transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.wardrobe-cat canvas { width: 100%; max-width: 110px; aspect-ratio: 1; }
+.wardrobe-cat .cat-name { font-weight: 800; font-size: 13px; }
+.wardrobe-cat .cat-skin { font-size: 10px; color: var(--muted); text-align: center; }
+.wardrobe-cat.selected { border-color: var(--accent); }
+.wardrobe-cat.locked { opacity: 0.5; }
+.skin-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.skin {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 8px 10px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 2px solid transparent;
+  min-width: 0;
+}
+.skin b { font-size: 13px; }
+.skin small { font-size: 11px; color: var(--muted); }
+.skin .skin-bonus { font-size: 11px; color: var(--good); font-weight: 700; }
+.skin.worn { border-color: var(--good); }
+.skin.locked { opacity: 0.45; cursor: default; }
+
+/* ---------- Сюжет и задания ---------- */
+.quest-list, .chapter-list { display: flex; flex-direction: column; gap: 6px; }
+.quest {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 10px;
+  align-items: center;
+}
+.quest-text { font-size: 13px; font-weight: 700; }
+.quest-reward { font-size: 11px; color: var(--muted); }
+.quest .progress { grid-column: 1 / -1; height: 8px; margin: 0; }
+.quest .progress > div { height: 100%; background: linear-gradient(90deg, var(--good), #22c55e); }
+.quest button {
+  padding: 6px 12px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #2a1600;
+  font-weight: 800;
+  font-size: 12px;
+  grid-row: span 2;
+}
+.quest button:disabled { background: #4a4166; color: #9a90b8; cursor: default; }
+.quests-done { font-size: 11px; color: var(--muted); margin: 6px 2px 0; }
+.chapter {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: 48px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  border-left: 4px solid var(--chapter-accent, var(--panel-2));
+}
+.chapter canvas { width: 48px; height: 48px; border-radius: 10px; }
+.chapter .ch-title { font-weight: 800; font-size: 13px; }
+.chapter .ch-sub { font-size: 11px; color: var(--muted); line-height: 1.3; }
+.chapter .ch-status { font-size: 11px; font-weight: 700; }
+.chapter.locked { opacity: 0.55; }
+.chapter button {
+  padding: 6px 10px;
+  border-radius: 9px;
+  background: var(--panel-2);
+  font-weight: 700;
+  font-size: 12px;
+}
+
+/* ---------- Диалоги ---------- */
+.dialogue {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 16px 16px max(16px, env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, rgba(8, 5, 18, 0.2), rgba(8, 5, 18, 0.75));
+  cursor: pointer;
+}
+.dialogue[hidden] { display: none; }
+.dialogue-card {
+  width: min(560px, 100%);
+  min-width: 0;
+  background: rgba(32, 24, 58, 0.97);
+  border: 2px solid #5b4b8a;
+  border-radius: 18px;
+  padding: 12px 14px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  animation: rise 0.25s ease-out;
+}
+@keyframes rise { from { transform: translateY(20px); opacity: 0; } }
+.dialogue-title { font-size: 12px; font-weight: 800; color: var(--gold); letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 6px; }
+.dialogue-body { display: grid; grid-template-columns: 96px 1fr; gap: 12px; align-items: start; }
+#dialogue-portrait { width: 96px; height: 96px; border-radius: 14px; border: 2px solid #5b4b8a; }
+.dialogue-text { min-width: 0; }
+.speaker { font-weight: 800; font-size: 15px; margin-bottom: 4px; }
+#dialogue-line { margin: 0; font-size: 15px; line-height: 1.45; min-height: 66px; }
+.dialogue-card.narration #dialogue-line { font-style: italic; color: #e9e3ff; }
+.dialogue-choices { display: flex; gap: 8px; }
+.dialogue-choices button { margin-top: 10px; }
+.dialogue-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; gap: 8px; }
+.dialogue-hint { font-size: 11px; color: var(--muted); animation: blink 1.4s infinite; }
+@keyframes blink { 50% { opacity: 0.4; } }
+.link-btn { background: none; color: var(--muted); font-size: 11px; text-decoration: underline; padding: 4px; margin-left: auto; }
 
 /* ---------- Перерождение ---------- */
 .prestige-card {
@@ -570,5 +705,5 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .case-icon, .boss-btn, .slot.target, .roulette-card.jackpot { animation: none; }
+  .case-icon, .boss-btn, .slot.target, .roulette-card.jackpot, .dialogue-card, .dialogue-hint { animation: none; }
 }
